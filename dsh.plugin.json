@@ -1,0 +1,16 @@
+{
+  "id": "dsh-external/dsh-doc-review",
+  "version": "0.1.0",
+  "main": "./lib/index.js",
+  "description": "Document-review modal: design documents and plan reviews open in a full rendered-markdown modal.",
+  "engines": {
+    "dsh": ">=0.0.1"
+  },
+  "contributes": {
+    "tools": [],
+    "skills": []
+  },
+  "client": {
+    "main": "./lib/client-registry.js"
+  }
+}

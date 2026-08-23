@@ -1,0 +1,6 @@
+# dsh-doc-review bundle patch: inserts the plugin row into the profile bundle
+# stack. The browser half is discovered through the package.json dsh.client
+# declaration; no DSH source row changes are required.
+- insert:
+    - id: doc-review
+      name: 'dsh-doc-review'
