@@ -64,6 +64,16 @@ DeepSeek Harness Web 内置的问题编辑器（`QuestionComposer`）为通用�
 - **重新展开**：控制条上的「展开完整文档」按钮重新打开弹窗。
 - **重连恢复**：页面刷新或断连重连后，待审弹窗随组件重开。
 
+### 文档行内评论
+
+审阅弹窗正文以「行网格」渲染（插件自研渲染器，见「技术方案概览」），每一源行带可点击的行号槽：
+
+- **添加评论**：选中文本后右键 → 自定义 popup「添加评论」（或直接点击行号槽）→ 该行下方内联展开编辑态（textarea + 发布 / 取消）→ 发布后以紧凑评论块展示在对应行下，提供编辑（✎）/ 删除（🗑）两个 16px icon 按钮；编辑态预填原文，删除即时生效（无单条确认）。
+- **页脚互斥**：存在任意评论时，弹窗页脚与收起控制条同时切换为「提交评论 / 取消」，选项按钮、自定义输入与「去聊天里说」全部隐藏——评论存在时无法直接批准。
+- **提交评论**：按行号升序聚合为一条意见，每条逐字 `对于第N行{原文内容}，我认为应{评论内容}`（空评论排除、`\n` 拼接、原文取源行 trim 不截断），经既有 `{ selected: [], custom }` 信封发送；成功后清空评论与持久化。
+- **取消**：弹出二级确认 Modal（确定 / 再想想）；确定仅清空本地（不发任何应答）并恢复普通决策页脚；再想想 / Esc / 遮罩仅关闭确认框。
+- **持久化**：评论按 `dsh-doc-review:v1:comments:<wait.key>` 存入 localStorage（`wait.key` 跨基线回放稳定），刷新 / 重挂载 / 收起展开 / 会话切换均不丢失；提交成功与「去聊天里说」dismiss 路径都会清除持久化。存储损坏 / 版本不符 / 非法条目自动降级或过滤，localStorage 不可用时静默退化为内存态。
+
 ### 国际化
 
 - 插件自身文案（标题 / 展开 / 关闭 / 取消 / 提交等）双语（zh / en），注册于 `doc-review` locale 命名空间，随界面语言自动切换。
@@ -101,16 +111,16 @@ conversation.composer chain
 DocReviewPanel
 ├── dr-frame（根容器）
 │   ├── dr-bar（控制条，始终挂载）
-│   │   ├── dr-bar-head（圆点 + 标题 + 展开按钮）
-│   │   └── dr-bar-body（弹窗关闭时：选项 + 取消）
-│   └── Modal headless（弹窗，expanded 时打开）
-│       ├── dr-modal-head（kicker + 标题 + 关闭按钮）
-│       ├── dr-modal-question（问题文本）
-│       ├── dr-modal-body（MarkdownText 渲染，可滚动）
-│       └── dr-modal-footer
-│           ├── dr-actions-row（选项按钮 + 取消）
-│           └── dr-custom（输入框 + 提交）
+│   │   ├── dr-bar-head（圆点 + 标题 + 评论数徽标 + 展开按钮）
+│   │   └── dr-bar-body（弹窗关闭时：有评论→提交评论/取消；否则选项 + 取消）
+│   ├── Modal headless（弹窗，expanded 时打开）
+│   │   ├── dr-modal-head（kicker + 标题 + 关闭按钮）
+│   │   ├── dr-modal-question（问题文本）
+│   │   ├── dr-modal-body（LineGrid 行网格渲染，可滚动）
+│   │   └── dr-modal-footer（有评论→提交评论/取消；否则 DecisionRow）
+│   └── Modal headless（取消全部二级确认框，confirming 时打开）
 ```
+弹窗正文由 `lines.tsx` 的 `LineGrid` 渲染：`classifyLines` 把源文档切成 1 起始行号的行模型（标题 / 列表 / 引用 / 分隔线 / 段落 / 空行，代码围栏与 GFM 表格按块聚合保留原文），行内 markdown 子集（粗体 / 斜体 / 行内代码 / 删除线 / http(s)·mailto 链接）自研解析；`comments.ts` 提供评论的 CRUD 纯函数、`buildFeedback` 聚合格式化与 localStorage 读写。
 
 弹窗使用 `Modal` 原语的 `headless` 模式——自建 header / body / footer 骨架，使标题栏和操作栏固定、文档正文独立滚动。内置 `Modal` 默认模式的 header 会随内容一起滚动，不适合文档审阅场景。
 
@@ -122,6 +132,7 @@ DocReviewPanel
 |---|---|
 | 点击选项按钮 | `{ answers: [{ id, selected: [label] }] }` |
 | 自定义意见 + 提交 | `{ answers: [{ id, selected: [], custom: text }] }` |
+| 提交评论（有评论时） | `{ answers: [{ id, selected: [], custom: <聚合意见> }] }`（宿主视为反馈，非批准） |
 | 去聊天里说（取消） | `{ ok: false, error: { code: 'cancelled', ... } }` |
 
 `label` 始终是提问方提供的原始标签（`Approve` / `确认定稿` 等），即使按钮显示的是本地化文案。
@@ -154,18 +165,23 @@ dsh-doc-review/
 │   └── client/
 │       ├── index.tsx          # 浏览器入口：注册词典 + 样式 + chain 条目
 │       ├── claim.ts           # 认领谓词 + 类型定义
-│       ├── DocReviewPanel.tsx # 主组件（弹窗 + 控制条 + DecisionRow）
+│       ├── DocReviewPanel.tsx # 主组件（弹窗 + 控制条 + 评论状态机）
+│       ├── comments.ts        # 评论数据层：CRUD 纯函数 + 聚合 + localStorage
+│       ├── lines.tsx          # 行网格渲染器（splitLines 分类 / 行内子集 / LineGrid）
 │       ├── locales.ts         # zh / en 词典
 │       └── styles.ts          # 注入式 CSS（dr- 前缀，仅用主题 token）
 ├── tests/
 │   ├── claim.client.spec.ts           # 认领矩阵（18 项）
-│   └── doc-review-panel.client.spec.tsx # 面板行为（12 项，含 i18n）
+│   ├── doc-review-panel.client.spec.tsx # 面板行为（32 项，含评论全链路 + i18n）
+│   └── comments.client.spec.ts        # 评论数据层 / 行模型纯逻辑（35 项）
 ├── demo/                             # 验证截图
 │   ├── modal-open-zh.png             # 弹窗主视图
 │   ├── modal-fullpage-zh.png         # 整页视图
 │   └── bar-collapsed-zh.png          # 收起控制条
 ├── smoke.mjs                    # 浏览器冒烟验证
+├── e2e-adaptive.mjs             # 自适应流水线端到端验证（弹窗接管 + 逐阶段确认）
 ├── e2e-plan.mjs                 # 标准 plan-mode 端到端验证
+├── e2e-comments.mjs             # 行内评论功能端到端验证（增/改/删/持久化/提交反馈）
 └── demo-zh.mjs                  # 中文环境验证 + 截图
 ```
 
@@ -187,7 +203,7 @@ cd dsh-doc-review
 pnpm install
 
 pnpm run typecheck    # 类型检查
-pnpm run test         # 单元测试（30 项全绿）
+pnpm run test         # 单元测试（85 项全绿）
 pnpm run build        # 构建（tsc 类型声明 + tsdown 打包）
 pnpm run pack         # 打包 tarball → dist/dsh-doc-review-0.1.0.tgz
 ```
@@ -241,7 +257,7 @@ rsync -a lib/ cordis.patch.yml dsh.plugin.json \
 
 重启后访问 `http://127.0.0.1:3080/`，在自适应模式下跑一个任务进入设计阶段，或在标准模式下输入 `/plan`——弹窗应自动弹出并渲染设计文档。
 
-项目内置了三个验证脚本：
+项目内置了四个验证脚本：
 
 ```sh
 # 浏览器冒烟（插件加载、样式注入、零错误）
@@ -249,6 +265,11 @@ node smoke.mjs
 
 # 标准 plan-mode 端到端（弹窗接管 + 弹窗内批准 + DONE）
 node e2e-plan.mjs
+
+# 行内评论端到端：自适应流水线全链路（行号槽添加 / 右键添加 / 编辑 / 删除 /
+# 刷新后 localStorage 持久化恢复 / 提交评论聚合反馈并驱动流水线完成落盘）+ 
+# 标准 plan-mode 下评论阻断批准、清空后恢复（断言失败退出码非零）
+node e2e-comments.mjs
 
 # 中文环境验证（按钮全部中文、紧凑布局、截图）
 node demo-zh.mjs
@@ -261,7 +282,26 @@ node demo-zh.mjs
 - 重连 / 重挂载后弹窗随组件重开，与「新的待审请求」语义一致。
 - 答案值始终是提问方原始标签（中 / 英文），按钮显示语言随界面切换。
 
+## 已知限制
+
+- 弹窗内宽表格保持横向滚动——`md-table-wide` 的容器查询突围仅作用于聊天消息流，弹窗是通用表面。
+- 弹窗不锁焦点（与 DSH 内置 `Modal` 一致）。
+- 重连 / 重挂载后弹窗随组件重开，与「新的待审请求」语义一致。
+- 答案值始终是提问方原始标签（中 / 英文），按钮显示语言随界面切换。
+
+### 行级渲染限制（文档行内评论）
+
+行网格渲染器（`lines.tsx`）替换了 `MarkdownText`，以换取确定性的源行号映射与评论锚点，渲染保真度存在已知降级：
+
+- **无 KaTeX 数学公式**：公式按字面文本显示。
+- **无代码语法高亮**：代码围栏整块聚合为 `<pre><code>`，保留原文逐行展示。
+- **复杂 / 嵌套表格**：GFM 表格按块聚合保留原文行，不渲染为 `<table>`（跨行列无法可靠对齐）；表格行不可单独评论行列。
+- **嵌套列表展平**：嵌套列表按源行逐行渲染，层级缩进不还原。
+- **行内子集**：仅支持粗体 / 斜体 / 行内代码 / 删除线 / http(s)·mailto 链接；图片、脚注、原生 HTML 按文本转义展示。
+- 评论锚定依赖源行号，与渲染样式无关；文档内容变化（新 revision）会带来新的 `wait.key`，评论自然隔离不串味。
+
 ## License
+
 
 [MIT](LICENSE)
 

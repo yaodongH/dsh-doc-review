@@ -19,14 +19,27 @@
  * the composer returns and the user can simply say what they want. The one
  * busy latch locks every affordance until the host's resolved frame lands;
  * a failed send re-arms it and says why.
+ *
+ * Line comments (the "文档行内评论" feature) layer a second decision mode on
+ * top: while any comment exists, both footers swap to 提交评论 / 取消 —
+ * options, the custom input and dismiss are hidden so a half-finished review
+ * can never be approved. 提交评论 aggregates every comment into one custom
+ * answer; 取消 clears them locally after a secondary confirmation, without
+ * answering. Comments persist under `dsh-doc-review:v1:comments:<wait.key>`
+ * and are cleared on submit and dismiss.
  */
 
 import { useMemo, useState } from 'react'
 import {
-  Button, IconCloseOutline16, IconFullscreenOutline16, MarkdownText, Modal,
+  Button, IconCloseOutline16, IconFullscreenOutline16, Modal,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { DocumentReview, DocumentReviewWait } from './claim.ts'
+import {
+  addComment, buildFeedback, clearComments, deleteComment, detailHashOf,
+  loadComments, saveComments, splitLines, updateComment, type DocComment,
+} from './comments.ts'
+import { LineGrid, type ContextMenuState } from './lines.tsx'
 import type { DocReviewKey } from './locales.ts'
 
 /** Full panel props: the framework runtime share plus the chain `matched` share plus the locale seat. */
@@ -175,6 +188,17 @@ export function DocReviewPanel({ matched, t }: DocReviewPanelProps) {
   const [error, setError] = useState<string | null>(null)
   const [custom, setCustom] = useState('')
 
+  // --- line comments -----------------------------------------------------
+  const sourceLines = useMemo(() => splitLines(review.detail), [review.detail])
+  const hash = useMemo(() => detailHashOf(review.detail), [review.detail])
+  const [comments, setComments] = useState<DocComment[]>(() => loadComments(wait.key, hash))
+  const [draftLine, setDraftLine] = useState<number | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [draftText, setDraftText] = useState('')
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
+  const [confirming, setConfirming] = useState(false)
+  const hasComments = comments.length > 0
+
   const title = useMemo(() => firstHeading(review.detail) ?? t('doc.header'), [review.detail, t])
   const options = useMemo<RenderedOption[]>(
     () => review.options.map(option => {
@@ -237,6 +261,106 @@ export function DocReviewPanel({ matched, t }: DocReviewPanelProps) {
   const submitCustom = (): void => settle(() => answer({ selected: [], custom: custom.trim() }))
   const cancel = (): void => settle(dismiss)
 
+  // --- comment handlers ---------------------------------------------------
+  /** Every mutating comment action is ignored while a send is in flight. */
+  const guard = <A extends unknown[]>(fn: (...args: A) => void): ((...args: A) => void) =>
+    (...args: A) => { if (busy) return; fn(...args) }
+
+  /** Persist the next comment state (setState + localStorage in one commit). */
+  const commit = (next: DocComment[]): void => {
+    setComments(next)
+    saveComments(wait.key, next, hash)
+  }
+
+  /** Clear the in-memory and persisted comment state. */
+  const clearAll = (): void => {
+    setComments([])
+    clearComments(wait.key)
+  }
+
+  const resetEditor = (): void => {
+    setDraftLine(null)
+    setEditingId(null)
+    setDraftText('')
+  }
+
+  const openContextMenu = guard((line: number, x: number, y: number) => { setContextMenu({ x, y, line }) })
+  const closeContextMenu = (): void => { setContextMenu(null) }
+  const openDraft = guard((line: number) => {
+    closeContextMenu()
+    setDraftLine(line)
+    setEditingId(null)
+    setDraftText('')
+  })
+  const changeDraft = (text: string): void => { setDraftText(text) }
+  const publishDraft = guard(() => {
+    if (draftLine === null || draftText.trim() === '') return
+    commit(addComment(comments, { line: draftLine, text: draftText }, Date.now()))
+    setDraftLine(null)
+    setDraftText('')
+  })
+  const openEdit = guard((id: string) => {
+    const comment = comments.find(item => item.id === id)
+    if (comment === undefined) return
+    closeContextMenu()
+    setEditingId(id)
+    setDraftLine(null)
+    setDraftText(comment.text)
+  })
+  const saveEdit = guard((id: string) => {
+    if (draftText.trim() === '') return
+    commit(updateComment(comments, id, draftText, Date.now()))
+    setEditingId(null)
+    setDraftText('')
+  })
+  const cancelEdit = (): void => {
+    setEditingId(null)
+    setDraftText('')
+  }
+  const deleteOne = guard((id: string) => { commit(deleteComment(comments, id)) })
+
+  /** 提交评论: one aggregated feedback answer; success clears the comments. */
+  const submitComments = guard(() => {
+    settle(async () => {
+      await answer({ selected: [], custom: buildFeedback(comments, sourceLines) })
+      clearAll()
+      resetEditor()
+    })
+  })
+  const openConfirm = guard(() => { setConfirming(true) })
+  /** 确定: clear locally only — no answer is sent, the review stays open. */
+  const confirmClear = (): void => {
+    clearAll()
+    resetEditor()
+    setConfirming(false)
+  }
+  const cancelConfirm = (): void => { setConfirming(false) }
+  /** dismiss 去聊天里说: existing cancelled envelope + defensive persistence clear. */
+  const dismissReview = (): void => settle(async () => {
+    await dismiss()
+    clearComments(wait.key)
+  })
+
+  /** The review modal's close path: first the context menu, then the confirm
+   * dialog, only then collapse — so Escape never skips a nested surface. */
+  const closeReview = (): void => {
+    if (contextMenu !== null) { setContextMenu(null); return }
+    if (confirming) { setConfirming(false); return }
+    setExpanded(false)
+  }
+
+  /** The comment-mode footer shared by the modal footer and the collapsed bar. */
+  const CommentFooter = (): JSX.Element => (
+    <div className="dr-review-actions">
+      <Button variant="primary" size="sm" disabled={busy} onClick={submitComments}>
+        {t('comment.submitAll')}
+      </Button>
+      <Button variant="ghost" size="sm" className="dr-cancel" disabled={busy} onClick={openConfirm}>
+        {t('comment.cancelAll')}
+      </Button>
+    </div>
+  )
+
   const row = {
     options,
     primaryLabel,
@@ -249,7 +373,7 @@ export function DocReviewPanel({ matched, t }: DocReviewPanelProps) {
     onChoose: decide,
     onCustomChange: (value: string) => { setCustom(value); setError(null) },
     onSubmitCustom: submitCustom,
-    onDismiss: cancel,
+    onDismiss: dismissReview,
   }
 
   return (
@@ -258,6 +382,9 @@ export function DocReviewPanel({ matched, t }: DocReviewPanelProps) {
         <div className="dr-bar-head">
           <span className="dr-bar-dot" aria-hidden="true" />
           <span className="dr-bar-title">{title}</span>
+          {hasComments && (
+            <span className="dr-bar-count">{t('comment.count').replace('{n}', String(comments.length))}</span>
+          )}
           {!expanded && (
             <button
               type="button"
@@ -273,13 +400,13 @@ export function DocReviewPanel({ matched, t }: DocReviewPanelProps) {
         </div>
         {!expanded && (
           <div className="dr-bar-body">
-            <DecisionRow {...row} withCustom={false} />
+            {hasComments ? <CommentFooter /> : <DecisionRow {...row} withCustom={false} />}
           </div>
         )}
       </section>
       <Modal
         open={expanded}
-        onClose={() => { setExpanded(false) }}
+        onClose={closeReview}
         headless
         title={title}
         closeLabel={t('doc.close')}
@@ -290,16 +417,63 @@ export function DocReviewPanel({ matched, t }: DocReviewPanelProps) {
             {review.header !== undefined && <span className="dr-modal-kicker">{review.header}</span>}
             <h2 className="dr-modal-title">{title}</h2>
           </div>
-          <button type="button" className="dr-modal-close" aria-label={t('doc.close')} onClick={() => { setExpanded(false) }}>
+          <button type="button" className="dr-modal-close" aria-label={t('doc.close')} onClick={closeReview}>
             <IconCloseOutline16 size={14} />
           </button>
         </div>
         <p className="dr-modal-question">{review.question}</p>
         <div className="dr-modal-body" data-doc-review-scroll>
-          <MarkdownText text={review.detail} />
+          <LineGrid
+            detail={review.detail}
+            comments={comments}
+            draftLine={draftLine}
+            editingId={editingId}
+            draftText={draftText}
+            busy={busy}
+            contextMenu={contextMenu}
+            t={t}
+            onContextMenuOpen={openContextMenu}
+            onContextMenuClose={closeContextMenu}
+            onDraftOpen={openDraft}
+            onDraftChange={changeDraft}
+            onDraftPublish={publishDraft}
+            onDraftCancel={() => { setDraftLine(null); setDraftText('') }}
+            onEditOpen={openEdit}
+            onEditSave={saveEdit}
+            onEditCancel={cancelEdit}
+            onDelete={deleteOne}
+          />
         </div>
         <div className="dr-modal-footer">
-          <DecisionRow {...row} withCustom />
+          {hasComments
+            ? (
+              <>
+                <div className="dr-feedback" role="status">{error}</div>
+                <CommentFooter />
+              </>
+            )
+            : <DecisionRow {...row} withCustom />}
+        </div>
+      </Modal>
+      <Modal
+        open={confirming}
+        onClose={cancelConfirm}
+        headless
+        title={t('comment.confirmTitle')}
+        closeLabel={t('comment.confirmCancel')}
+        className="dr-confirm"
+      >
+        <div className="dr-confirm-body">
+          <h2>{t('comment.confirmTitle')}</h2>
+          <p>{t('comment.confirmBody')}</p>
+        </div>
+        <div className="dr-confirm-actions">
+          <Button variant="ghost" size="sm" onClick={cancelConfirm}>
+            {t('comment.confirmCancel')}
+          </Button>
+          <Button variant="primary" size="sm" onClick={confirmClear}>
+            {t('comment.confirmOk')}
+          </Button>
         </div>
       </Modal>
     </div>
