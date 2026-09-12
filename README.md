@@ -90,20 +90,25 @@ DeepSeek Harness Web 内置的问题编辑器（`QuestionComposer`）为通用�
 conversation.composer chain
   priority -1  ← dsh-doc-review（文档提问：弹窗接管）
   priority  0  ← dsh-client-ui-user-questions（通用提问：卡片流程）
-  priority  1  ← dsh-client-ui-conversation（审批流程）
+  priority  0  ← dsh-client-ui-approval / dsh-client-ui-subagent（审批、只读子代理）
 ```
 
 插件以 `priority: -1` 注册进 `conversation.composer` 键控链式 slot。Chain 按优先级升序运行 selector，首个非空即胜出——文档类提问被本插件认领后，内置问题编辑器的 selector 不再执行；其余提问原样落回。
+
+链主（chain owner）传入的是当前会话**唯一生效**的待答交互 `pendingInteraction`（`ComposerChainProps`），不是交互列表：同一时刻只有一个交互在等用户（`dsh-client-ui-session` 的待答交互注册表按优先级选出一个）。提问方的载体是 `dsh-client-ui-user-questions` 的 `PendingQuestion` 实例，`kind` 为 `'question' | 'plan-review'`；审批方是 `dsh-client-ui-approval` 的 `PendingApproval`，`kind` 为 `'approval'`。
+
+因此 selector 先读 `kind` 判别域，再解引用其余字段：本插件只以 `import type` 引入 `PendingQuestion` 的类型，编译期看到的联合成员只有提问域这一个，而运行时装配出的客户端会传入**所有**域的载体——所以判别字段必须在运行时重读，不能只信类型。
 
 ### 认领条件
 
 `claim.ts` 中的纯函数 `documentReviewOf()` 是认领谓词，chain selector 与组件共用。满足以下全部条件才接管：
 
-1. 单个 question（非多题批量）；
-2. `multiSelect` 非真；
-3. `intent` 为 `undefined` 或 `{ kind: 'plan-review' }`；
-4. `detail` 为含 Markdown ATX 标题行（`/^#{1,6}\s+\S/m`）的字符串；
-5. 选项数 ≤ 3。
+1. `kind` ∈ `{'question', 'plan-review'}`（`approval` 等其它域直接落回）；
+2. 单个 question（非多题批量）；
+3. `multiSelect` 非真；
+4. `intent` 为 `undefined` 或 `{ kind: 'plan-review' }`；
+5. `detail` 为含 Markdown ATX 标题行（`/^#{1,6}\s+\S/m`）的字符串；
+6. 选项数 ≤ 3。
 
 ### 组件结构
 
@@ -126,16 +131,20 @@ DocReviewPanel
 
 ### 答案编码
 
-逐字复用内置问题编辑器的应答语义：
+逐字复用内置问题编辑器的应答语义——三个应答路径都走载体的自身方法（`PendingQuestion.answer` / `.cancel`），不再有 RPC 回执信封：
 
-| 操作 | 应答 |
-|---|---|
-| 点击选项按钮 | `{ answers: [{ id, selected: [label] }] }` |
-| 自定义意见 + 提交 | `{ answers: [{ id, selected: [], custom: text }] }` |
-| 提交评论（有评论时） | `{ answers: [{ id, selected: [], custom: <聚合意见> }] }`（宿主视为反馈，非批准） |
-| 去聊天里说（取消） | `{ ok: false, error: { code: 'cancelled', ... } }` |
+| 操作 | 调用 | 宿主收到的答案 |
+|---|---|---|
+| 点击选项按钮 | `interaction.answer()` | `{ answers: [{ id, selected: [label] }] }` |
+| 自定义意见 + 提交 | `interaction.answer()` | `{ answers: [{ id, selected: [], custom: text }] }` |
+| 提交评论（有评论时） | `interaction.answer()` | `{ answers: [{ id, selected: [], custom: <聚合意见> }] }`（宿主视为反馈，非批准） |
+| 去聊天里说（取消） | `interaction.cancel()` | 请求以 `ASK_CANCELLED` 拒绝；plan-review 场景下宿主提示模型「用户改为直接说话」 |
 
-`label` 始终是提问方提供的原始标签（`Approve` / `确认定稿` 等），即使按钮显示的是本地化文案。
+`label` 始终是提问方提供的原始标签（`Approve` / `确认定稿` 等），即使按钮显示的是本地化文案。载体已结算时两个方法都会抛错，面板据此重新解锁并显示原因。
+
+### 兼容性
+
+本插件是客户端 API 的消费方，`0.1.1` 起对齐 **DSH Client `0.1.5-alpha.1`** 的链路契约（`ComposerChainProps.pendingInteraction` 单一载体 + `PendingQuestion.answer/cancel`）。`0.1.0` 针对的是已被替换的旧契约（owner props 的 `interactions` 数组 + `PendingWait.respond` 回执），在 0.1.5 上每次渲染输入区都会抛 `Cannot read properties of undefined (reading 'find')` —— 该旧版本请勿与 0.1.5 客户端混用。
 
 ### 构建产物
 
@@ -171,7 +180,8 @@ dsh-doc-review/
 │       ├── locales.ts         # zh / en 词典
 │       └── styles.ts          # 注入式 CSS（dr- 前缀，仅用主题 token）
 ├── tests/
-│   ├── claim.client.spec.ts           # 认领矩阵（18 项）
+│   ├── carrier.ts                     # 共享夹具：PendingQuestion 形态的待答载体
+│   ├── claim.client.spec.ts           # 认领矩阵（19 项）
 │   ├── doc-review-panel.client.spec.tsx # 面板行为（32 项，含评论全链路 + i18n）
 │   └── comments.client.spec.ts        # 评论数据层 / 行模型纯逻辑（35 项）
 ├── demo/                             # 验证截图
@@ -189,7 +199,7 @@ dsh-doc-review/
 
 ### 环境要求
 
-- DeepSeek Harness `>= 0.0.1`
+- DSH Web，Client API `0.1.5-alpha.1`（见「兼容性」）
 - pnpm `>= 11`
 - Node `>= 22`
 
@@ -198,14 +208,13 @@ dsh-doc-review/
 ```sh
 cd dsh-doc-review
 
-# 首次安装依赖（需要能访问 DSH 仓库的 node_modules）
-# node_modules/@deepseek-ai → 指向 deepseek-harness/apps/cli/node_modules/@deepseek-ai
+# 首次安装依赖（从 registry 拉取 @deepseek-ai/* 客户端包；版本与目标 DSH 对齐）
 pnpm install
 
 pnpm run typecheck    # 类型检查
-pnpm run test         # 单元测试（85 项全绿）
+pnpm run test         # 单元测试（86 项全绿）
 pnpm run build        # 构建（tsc 类型声明 + tsdown 打包）
-pnpm run pack         # 打包 tarball → dist/dsh-doc-review-0.1.0.tgz
+pnpm run pack         # 打包 tarball → dist/dsh-doc-review-0.1.1.tgz
 ```
 
 ### 部署到 profile
@@ -224,7 +233,7 @@ pnpm run pack         # 打包 tarball → dist/dsh-doc-review-0.1.0.tgz
   },
   "dependencies": {
     // ... 已有依赖 ...
-    "dsh-doc-review": "file:/path/to/dsh-doc-review/dist/dsh-doc-review-0.1.0.tgz"  // ← 新增
+    "dsh-doc-review": "file:/path/to/dsh-doc-review/dist/dsh-doc-review-0.1.1.tgz"  // ← 新增
   }
 }
 ```

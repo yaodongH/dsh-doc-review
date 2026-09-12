@@ -10,6 +10,11 @@ import { defineConfig } from 'vitest/config'
  * anchored on the process cwd (vitest re-bundles this config under
  * node_modules/.vite-temp, so import.meta.url is not stable).
  *
+ * Only the spec-visible VALUE imports need an alias: react and the UI
+ * primitives the panel renders with. Every @deepseek-ai client type this
+ * package consumes (the composer chain owner props, the pending-question
+ * carrier, the locale seat) is `import type` and erased before vitest sees it.
+ *
  * When the sibling DSH checkout is absent (e.g. a CI run that could not fetch
  * it), the source aliases cannot resolve, so the suite is skipped with
  * passWithNoTests — the typecheck and build jobs still validate the plugin
@@ -18,14 +23,10 @@ import { defineConfig } from 'vitest/config'
 const REPO = resolve(process.cwd(), '..', 'deepseek-harness')
 
 const SOURCE_ALIASES = [
-  ['@deepseek-ai/dsh-client-runtime/client', 'packages/client/runtime/src/client/index.ts'],
-  ['@deepseek-ai/dsh-client-connection/client', 'packages/client/connection/src/client/index.ts'],
   ['@deepseek-ai/dsh-client-ui-primitives', 'packages/client/ui-primitives/src/index.ts'],
-  ['@deepseek-ai/dsh-client-ui-slots', 'packages/client/ui-slots/src/index.ts'],
-  ['@deepseek-ai/dsh-client-locale', 'packages/client/locale/src/index.ts'],
 ] as const
 
-const hasDshSource = existsSync(resolve(REPO, 'packages', 'client', 'runtime', 'src'))
+const hasDshSource = existsSync(resolve(REPO, 'packages', 'client', 'ui-primitives', 'src'))
 
 export default defineConfig({
   resolve: {
@@ -33,6 +34,10 @@ export default defineConfig({
       find,
       replacement: resolve(REPO, replacement),
     })),
+    // The aliased DSH sources import react from the sibling checkout's own
+    // install; without dedupe the panel renders on one React and the spec's
+    // react-dom on another, and every hook call throws.
+    dedupe: ['react', 'react-dom', 'react/jsx-runtime'],
   },
   test: {
     // Node by default; DOM specs opt in with a per-file jsdom pragma.

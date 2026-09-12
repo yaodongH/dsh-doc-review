@@ -1,8 +1,8 @@
 /**
  * DocReviewPanel: the composer-chain takeover for document-shaped question
- * waits (see claim.ts for the claim). A document review is one decision over
- * one rendered markdown body, so it takes a full review window: a modal that
- * auto-opens with the rendered document, a fixed header (document title,
+ * carriers (see claim.ts for the claim). A document review is one decision
+ * over one rendered markdown body, so it takes a full review window: a modal
+ * that auto-opens with the rendered document, a fixed header (document title,
  * stage header, question text) and a fixed decision footer (option buttons,
  * custom answer, "chat about it"), with a scrollable markdown body between.
  *
@@ -15,18 +15,18 @@
  * The three answer paths are the whole decision surface: an option click
  * answers with the asker's own label verbatim (single-select submits at
  * once, as the built-in flow does), the custom field answers with
- * `{ selected: [], custom }`, and dismiss rejects the wait as cancelled so
- * the composer returns and the user can simply say what they want. The one
- * busy latch locks every affordance until the host's resolved frame lands;
- * a failed send re-arms it and says why.
+ * `{ selected: [], custom }`, and dismiss cancels the request so the composer
+ * returns and the user can simply say what they want. The one busy latch locks
+ * every affordance until the request settles; a rejected answer or cancel
+ * re-arms it and says why.
  *
  * Line comments (the "文档行内评论" feature) layer a second decision mode on
  * top: while any comment exists, both footers swap to 提交评论 / 取消 —
  * options, the custom input and dismiss are hidden so a half-finished review
  * can never be approved. 提交评论 aggregates every comment into one custom
  * answer; 取消 clears them locally after a secondary confirmation, without
- * answering. Comments persist under `dsh-doc-review:v1:comments:<wait.key>`
- * and are cleared on submit and dismiss.
+ * answering. Comments persist under `dsh-doc-review:v1:comments:<key>` and
+ * are cleared on submit and dismiss.
  */
 
 import { useMemo, useState } from 'react'
@@ -178,12 +178,12 @@ function DecisionRow(props: {
  * @returns The takeover for this request.
  */
 export function DocReviewPanel({ matched, t }: DocReviewPanelProps) {
-  const { wait, review } = matched
+  const { interaction, review } = matched
   // The modal opens on arrival; closing it never dismisses the request.
   const [expanded, setExpanded] = useState(true)
   // One-shot latch shaped like the built-in takeover's: the panel leaves only
-  // when the host's resolved frame lands, so until then a second click must
-  // not re-fire. A failed send re-arms it and shows why.
+  // when the request settles and the chain re-elects, so until then a second
+  // click must not re-fire. A rejected answer or cancel re-arms it and shows why.
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [custom, setCustom] = useState('')
@@ -191,7 +191,7 @@ export function DocReviewPanel({ matched, t }: DocReviewPanelProps) {
   // --- line comments -----------------------------------------------------
   const sourceLines = useMemo(() => splitLines(review.detail), [review.detail])
   const hash = useMemo(() => detailHashOf(review.detail), [review.detail])
-  const [comments, setComments] = useState<DocComment[]>(() => loadComments(wait.key, hash))
+  const [comments, setComments] = useState<DocComment[]>(() => loadComments(interaction.key, hash))
   const [draftLine, setDraftLine] = useState<number | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draftText, setDraftText] = useState('')
@@ -233,26 +233,14 @@ export function DocReviewPanel({ matched, t }: DocReviewPanelProps) {
     })
   }
 
-  /** Deliver one answer batch; a rejected carrier receipt throws. */
+  /** Deliver one answer batch through the carrier; a settled carrier rejects. */
   const answer = async (item: { selected: string[]; custom?: string }): Promise<void> => {
-    const receipt = await wait.respond({
-      ok: true,
-      value: { sessionId: wait.sessionId, answer: { answers: [{ id: review.id, ...item }] } },
-    })
-    if (!receipt.accepted) {
-      throw new Error(`question response rejected: ${receipt.reason}`)
-    }
+    await interaction.answer({ answers: [{ id: review.id, ...item }] })
   }
 
-  /** Reject the whole wait (the host resolves the tool call as cancelled); a rejected receipt throws. */
+  /** Cancel the whole request (the host resolves the tool call as cancelled); a settled carrier rejects. */
   const dismiss = async (): Promise<void> => {
-    const receipt = await wait.respond({
-      ok: false,
-      error: { code: 'cancelled', message: 'the user closed this question request', details: {} },
-    })
-    if (!receipt.accepted) {
-      throw new Error(`question cancellation rejected: ${receipt.reason}`)
-    }
+    await interaction.cancel()
   }
 
   const decide = (label: string): void => settle(() => answer({ selected: [label] }))
@@ -269,13 +257,13 @@ export function DocReviewPanel({ matched, t }: DocReviewPanelProps) {
   /** Persist the next comment state (setState + localStorage in one commit). */
   const commit = (next: DocComment[]): void => {
     setComments(next)
-    saveComments(wait.key, next, hash)
+    saveComments(interaction.key, next, hash)
   }
 
   /** Clear the in-memory and persisted comment state. */
   const clearAll = (): void => {
     setComments([])
-    clearComments(wait.key)
+    clearComments(interaction.key)
   }
 
   const resetEditor = (): void => {
@@ -338,7 +326,7 @@ export function DocReviewPanel({ matched, t }: DocReviewPanelProps) {
   /** dismiss 去聊天里说: existing cancelled envelope + defensive persistence clear. */
   const dismissReview = (): void => settle(async () => {
     await dismiss()
-    clearComments(wait.key)
+    clearComments(interaction.key)
   })
 
   /** The review modal's close path: first the context menu, then the confirm
@@ -377,7 +365,7 @@ export function DocReviewPanel({ matched, t }: DocReviewPanelProps) {
   }
 
   return (
-    <div className="dr-frame" data-doc-review-key={wait.key}>
+    <div className="dr-frame" data-doc-review-key={interaction.key}>
       <section className="dr-bar" aria-label={review.question}>
         <div className="dr-bar-head">
           <span className="dr-bar-dot" aria-hidden="true" />
@@ -409,7 +397,6 @@ export function DocReviewPanel({ matched, t }: DocReviewPanelProps) {
         onClose={closeReview}
         headless
         title={title}
-        closeLabel={t('doc.close')}
         className="dr-modal"
       >
         <div className="dr-modal-head">
@@ -460,7 +447,6 @@ export function DocReviewPanel({ matched, t }: DocReviewPanelProps) {
         onClose={cancelConfirm}
         headless
         title={t('comment.confirmTitle')}
-        closeLabel={t('comment.confirmCancel')}
         className="dr-confirm"
       >
         <div className="dr-confirm-body">

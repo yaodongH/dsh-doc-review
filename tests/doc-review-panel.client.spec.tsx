@@ -2,21 +2,16 @@
 // The document-review takeover, driven through the panel component directly:
 // a claimed document question must open the review modal with the rendered
 // markdown, answer with the asker's own option labels (or a custom answer),
-// dismiss as cancelled, and re-arm after a failed send — while the control
-// bar keeps every decision reachable once the modal is closed.
+// cancel the request on dismiss, and re-arm after a rejected send — while the
+// control bar keeps every decision reachable once the modal is closed.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import type {
-  ConversationSnapshot, SessionId, SessionListState, WorkspaceListState,
-} from '@deepseek-ai/dsh-client-runtime/client'
-import { PendingWait } from '@deepseek-ai/dsh-client-runtime/client'
-import type { RpcReceipt } from '@deepseek-ai/dsh-client-connection/client'
-import { RpcId } from '@deepseek-ai/dsh-client-connection/client'
-import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
+import type { QuestionCarrier } from '../src/client/claim.ts'
 import { documentReviewOf, type DocumentReviewWait } from '../src/client/claim.ts'
 import { storageKey } from '../src/client/comments.ts'
 import { DocReviewPanel, type DocReviewPanelProps } from '../src/client/DocReviewPanel.tsx'
 import { en, zh } from '../src/client/locales.ts'
+import { CARRIER_KEY, questionCarrier, type AnswerBatch } from './carrier.ts'
 
 afterEach(() => {
   cleanup()
@@ -24,30 +19,27 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-const SID = 's1' as SessionId
-
 /** Seat stub over one dictionary, mirroring the real lookup chain's first stop. */
 const seatOver = (dict: Record<string, string>): DocReviewPanelProps['t'] =>
   (key => dict[key] ?? key)
 
-/** Framework standard-kit stubs: the panel consumes only the locale seat. */
+/**
+ * Framework standard-kit stubs. The panel reads only the matched carrier and
+ * the locale seat; the surrounding Session kit reaches it from the renderer at
+ * runtime and is not this component's contract, so the stub declares the owner
+ * props it must carry and asserts the rest.
+ */
 const kit = {
-  interactions: [] as never,
-  sessionId: SID,
+  pendingInteraction: undefined,
+  sessionId: 's1' as DocReviewPanelProps['sessionId'],
   session: undefined,
-  useSession: (() => { throw new Error('unused') }) as unknown as SnapshotSelectorHook<ConversationSnapshot>,
-  useSessions: (() => { throw new Error('unused') }) as unknown as SnapshotSelectorHook<SessionListState>,
-  useWorkspaces: (() => { throw new Error('unused') }) as unknown as SnapshotSelectorHook<WorkspaceListState>,
-  useProjection: (() => undefined) as never,
-  useInput: (() => { throw new Error('unused') }) as never,
-  inputActions: { setDraft: () => { throw new Error('unused') }, submit: () => { throw new Error('unused') } } as never,
   t: seatOver(zh),
-}
+} as unknown as Omit<DocReviewPanelProps, 'matched'>
 
 const DOC = '# 概要设计：仓库管理\n\n## 架构\n\n- 模块 A\n- 模块 B\n'
 
 /** The adaptive-pipeline request shape: one question, the document as detail, stage-scoped header. */
-const questions = (): PendingWait<'question'>['payload']['questions'] => [{
+const questions = (): QuestionCarrier['questions'] => [{
   id: 'doc-1',
   header: '概要设计 · 阶段提问',
   question: '请审阅以上设计文档',
@@ -58,35 +50,33 @@ const questions = (): PendingWait<'question'>['payload']['questions'] => [{
   ],
 }]
 
-/** Carrier fixture over a scripted respond carrier, narrowed to a document review. */
+/**
+ * Carrier fixture narrowed to a document review: `answer` and `cancel` are the
+ * spies the panel's decision paths must reach, over a scripted settlement.
+ */
 function match(
-  payload: PendingWait<'question'>['payload'] = { questions: questions() },
-  respond = vi.fn(() => Promise.resolve<RpcReceipt>({ accepted: true })),
-): { matched: DocumentReviewWait; respond: ReturnType<typeof vi.fn> } {
-  const carrier = new PendingWait('question', RpcId('q-1'), SID, payload, respond)
-  const review = documentReviewOf(carrier)
+  batch: QuestionCarrier['questions'] = questions(),
+  answer = vi.fn(async (_batch: AnswerBatch): Promise<void> => {}),
+  cancel = vi.fn(async (): Promise<void> => {}),
+): { matched: DocumentReviewWait; answer: typeof answer; cancel: typeof cancel } {
+  const pending = questionCarrier(batch, { answer, cancel })
+  const review = documentReviewOf(pending.interaction)
   if (review === null) throw new Error('fixture must be a claimable document review')
-  return { matched: review, respond }
+  return { matched: review, answer, cancel }
 }
 
-/** The client-response envelope respond must have received for an option decision. */
-function decidedEnvelope(label: string) {
-  return {
-    type: 'client-response', rpcId: RpcId('q-1'),
-    result: { ok: true, value: { sessionId: SID, answer: { answers: [{ id: 'doc-1', selected: [label] }] } } },
-  }
+/** The answer batch an option decision must deliver. */
+function decided(label: string): AnswerBatch {
+  return { answers: [{ id: 'doc-1', selected: [label] }] }
 }
 
-/** The client-response envelope for a custom answer. */
-function customEnvelope(text: string) {
-  return {
-    type: 'client-response', rpcId: RpcId('q-1'),
-    result: { ok: true, value: { sessionId: SID, answer: { answers: [{ id: 'doc-1', selected: [], custom: text }] } } },
-  }
+/** The answer batch a custom answer must deliver. */
+function custom(text: string): AnswerBatch {
+  return { answers: [{ id: 'doc-1', selected: [], custom: text }] }
 }
 
-/** The fixture wait.key — matches PendingWait('question', RpcId('q-1'), ...). */
-const KEY = storageKey('q:q-1')
+/** The fixture carrier's comment-store key. */
+const KEY = storageKey(CARRIER_KEY)
 
 /** Publish one comment through the UI on a (currently uncommented) line. */
 function publishComment(text: string, line = 5) {
@@ -122,7 +112,7 @@ describe('DocReviewPanel', () => {
   })
 
   it('collapses to the control bar without dismissing, and reopens', () => {
-    const { matched, respond } = match()
+    const { matched, answer } = match()
     render(<DocReviewPanel matched={matched} {...kit} />)
 
     fireEvent.click(screen.getByRole('button', { name: zh['doc.close'] }))
@@ -133,81 +123,78 @@ describe('DocReviewPanel', () => {
     expect(screen.getByRole('button', { name: zh['doc.expand'] })).toBeTruthy()
     expect(screen.getByRole('button', { name: '确认' })).toBeTruthy()
     expect(screen.getByRole('button', { name: zh['action.cancel'] })).toBeTruthy()
-    expect(respond).not.toHaveBeenCalled()
+    expect(answer).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole('button', { name: zh['doc.expand'] }))
     expect(screen.getByRole('dialog', { name: '概要设计：仓库管理' })).toBeTruthy()
   })
 
   it('collapses on Escape without answering', () => {
-    const { matched, respond } = match()
+    const { matched, answer } = match()
     render(<DocReviewPanel matched={matched} {...kit} />)
 
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(screen.queryByRole('dialog')).toBeNull()
-    expect(respond).not.toHaveBeenCalled()
+    expect(answer).not.toHaveBeenCalled()
   })
 
   it('answers with the asker\'s own label verbatim and locks once', () => {
-    const { matched, respond } = match()
+    const { matched, answer } = match()
     render(<DocReviewPanel matched={matched} {...kit} />)
 
     fireEvent.click(screen.getByRole('button', { name: '确认' }))
-    expect(respond).toHaveBeenCalledWith(decidedEnvelope('确认'))
+    expect(answer).toHaveBeenCalledWith(decided('确认'))
     // One-shot: every action locks until the host's resolved frame lands.
     expect(screen.getByRole('button', { name: '需要修改' }).hasAttribute('disabled')).toBe(true)
     fireEvent.click(screen.getByRole('button', { name: '需要修改' }))
-    expect(respond).toHaveBeenCalledTimes(1)
+    expect(answer).toHaveBeenCalledTimes(1)
   })
 
   it('submits a custom answer', () => {
-    const { matched, respond } = match()
+    const { matched, answer } = match()
     render(<DocReviewPanel matched={matched} {...kit} />)
 
     const input = screen.getByRole('textbox') as HTMLTextAreaElement
     fireEvent.change(input, { target: { value: '把模块 B 去掉' } })
     fireEvent.click(screen.getByRole('button', { name: zh['action.submit'] }))
-    expect(respond).toHaveBeenCalledWith(customEnvelope('把模块 B 去掉'))
+    expect(answer).toHaveBeenCalledWith(custom('把模块 B 去掉'))
   })
 
   it('disables the custom submit while the draft is empty', () => {
-    const { matched, respond } = match()
+    const { matched, answer } = match()
     render(<DocReviewPanel matched={matched} {...kit} />)
 
     const submit = screen.getByRole('button', { name: zh['action.submit'] })
     expect(submit.hasAttribute('disabled')).toBe(true)
     fireEvent.click(submit)
-    expect(respond).not.toHaveBeenCalled()
+    expect(answer).not.toHaveBeenCalled()
   })
 
   it('dismisses the request so the composer returns for a plain message', () => {
-    const { matched, respond } = match()
+    const { matched, answer, cancel } = match()
     render(<DocReviewPanel matched={matched} {...kit} />)
 
     fireEvent.click(screen.getByRole('button', { name: zh['action.cancel'] }))
-    expect(respond).toHaveBeenCalledWith({
-      type: 'client-response', rpcId: RpcId('q-1'),
-      result: {
-        ok: false,
-        error: { code: 'cancelled', message: 'the user closed this question request', details: {} },
-      },
-    })
+    expect(cancel).toHaveBeenCalledTimes(1)
+    expect(answer).not.toHaveBeenCalled()
   })
 
   it('re-arms the actions and says why when the decision does not land', async () => {
-    const { matched, respond } = match(
-      { questions: questions() },
-      vi.fn(() => Promise.resolve<RpcReceipt>({ accepted: false, reason: 'not-pending' })),
+    const { matched, answer } = match(
+      questions(),
+      vi.fn(async (_batch: AnswerBatch): Promise<void> => {
+        throw new Error('pending question question:q-1 is already settled')
+      }),
     )
     render(<DocReviewPanel matched={matched} {...kit} />)
 
     fireEvent.click(screen.getByRole('button', { name: '确认' }))
-    const failure = await screen.findByText('question response rejected: not-pending')
+    const failure = await screen.findByText('pending question question:q-1 is already settled')
     expect(failure.getAttribute('role')).toBe('status')
     // Re-armed for the retry: a lost click must not leave a dead surface.
     expect(screen.getByRole('button', { name: '确认' }).hasAttribute('disabled')).toBe(false)
     fireEvent.click(screen.getByRole('button', { name: '确认' }))
-    expect(respond).toHaveBeenCalledTimes(2)
+    expect(answer).toHaveBeenCalledTimes(2)
   })
 
   it('carries the same decision surface in English', () => {
@@ -221,11 +208,11 @@ describe('DocReviewPanel', () => {
 
   it('localizes the plan-review intent\'s English buttons and answers verbatim', () => {
     const [question] = questions()
-    const { matched, respond } = match({ questions: [{
+    const { matched, answer } = match([{
       ...question as object,
       intent: { kind: 'plan-review', approve: 'Approve' },
       options: [{ label: 'Approve', description: 'Carry out the plan.' }, { label: 'Keep planning' }],
-    }] as never })
+    }] as never)
     render(<DocReviewPanel matched={matched} {...kit} />)
 
     // English labels render as localized copy, the asker's description as the tooltip.
@@ -234,22 +221,19 @@ describe('DocReviewPanel', () => {
     expect(screen.getByRole('button', { name: '拒绝' })).toBeTruthy()
     fireEvent.click(approve)
     // The answer still carries the asker's label verbatim.
-    expect(respond).toHaveBeenCalledWith({
-      type: 'client-response', rpcId: RpcId('q-1'),
-      result: { ok: true, value: { sessionId: SID, answer: { answers: [{ id: 'doc-1', selected: ['Approve'] }] } } },
-    })
+    expect(answer).toHaveBeenCalledWith(decided('Approve'))
   })
 
   it('keeps Chinese intent labels verbatim (adaptive pipeline shape)', () => {
     const [question] = questions()
-    const { matched } = match({ questions: [{
+    const { matched } = match([{
       ...question as object,
       intent: { kind: 'plan-review', approve: '确认定稿' },
       options: [
         { label: '确认定稿', description: '确认内容无误，将保存为定稿文件并推进流水线。' },
         { label: '继续修改', description: '需要修改，可在补充回答中填写修改意见。' },
       ],
-    }] as never })
+    }] as never)
     render(<DocReviewPanel matched={matched} {...kit} />)
 
     expect(screen.getByRole('button', { name: '确认定稿' })).toBeTruthy()
@@ -258,11 +242,11 @@ describe('DocReviewPanel', () => {
 
   it('renders the intent buttons in English under the en locale', () => {
     const [question] = questions()
-    const { matched } = match({ questions: [{
+    const { matched } = match([{
       ...question as object,
       intent: { kind: 'plan-review', approve: 'Approve' },
       options: [{ label: 'Approve' }, { label: 'Keep planning' }],
-    }] as never })
+    }] as never)
     render(<DocReviewPanel matched={matched} {...kit} t={seatOver(en)} />)
 
     expect(screen.getByRole('button', { name: 'Approve' })).toBeTruthy()
@@ -394,12 +378,12 @@ describe('DocReviewPanel', () => {
       { id: 'c2', line: 3, text: 'C意见', createdAt: 1, updatedAt: 1 },
       { id: 'c3', line: 5, text: '   ', createdAt: 3, updatedAt: 3 },
     ])
-    const { matched, respond } = match()
+    const { matched, answer } = match()
     render(<DocReviewPanel matched={matched} {...kit} />)
 
     fireEvent.click(screen.getByRole('button', { name: zh['comment.submitAll'] }))
     // Sorted by line, whitespace-only excluded, verbatim sentence per line.
-    expect(respond).toHaveBeenCalledWith(customEnvelope(
+    expect(answer).toHaveBeenCalledWith(custom(
       '对于第3行## 架构，我认为应C意见\n对于第5行- 模块 A，我认为应A意见',
     ))
     // Success clears persisted + in-memory state; the decision footer returns.
@@ -420,8 +404,8 @@ describe('DocReviewPanel', () => {
     expect(screen.getByRole('button', { name: zh['comment.confirmOk'] })).toBeTruthy()
   })
 
-  it('keeps the comments when the confirmation says 再想想 (no respond)', () => {
-    const { matched, respond } = match()
+  it('keeps the comments when the confirmation says 再想想 (no answer)', () => {
+    const { matched, answer } = match()
     render(<DocReviewPanel matched={matched} {...kit} />)
 
     publishComment('拆成两子模块')
@@ -431,11 +415,11 @@ describe('DocReviewPanel', () => {
     expect(screen.queryByRole('dialog', { name: zh['comment.confirmTitle'] })).toBeNull()
     expect(screen.getByText('拆成两子模块')).toBeTruthy()
     expect(screen.getByRole('button', { name: zh['comment.submitAll'] })).toBeTruthy()
-    expect(respond).not.toHaveBeenCalled()
+    expect(answer).not.toHaveBeenCalled()
   })
 
-  it('clears comments locally on 确定 — no respond, decision footer restored', () => {
-    const { matched, respond } = match()
+  it('clears comments locally on 确定 — no answer, decision footer restored', () => {
+    const { matched, answer } = match()
     render(<DocReviewPanel matched={matched} {...kit} />)
 
     publishComment('拆成两子模块')
@@ -445,12 +429,12 @@ describe('DocReviewPanel', () => {
     expect(screen.queryByRole('dialog', { name: zh['comment.confirmTitle'] })).toBeNull()
     expect(screen.queryByText('拆成两子模块')).toBeNull()
     expect(localStorage.getItem(KEY)).toBeNull()
-    expect(respond).not.toHaveBeenCalled()
+    expect(answer).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: '确认' })).toBeTruthy()
   })
 
-  it('closes only the confirm dialog on Escape (review modal stays, no respond)', () => {
-    const { matched, respond } = match()
+  it('closes only the confirm dialog on Escape (review modal stays, no answer)', () => {
+    const { matched, answer } = match()
     render(<DocReviewPanel matched={matched} {...kit} />)
 
     publishComment('拆成两子模块')
@@ -459,11 +443,11 @@ describe('DocReviewPanel', () => {
 
     expect(screen.queryByRole('dialog', { name: zh['comment.confirmTitle'] })).toBeNull()
     expect(screen.getByRole('dialog', { name: '概要设计：仓库管理' })).toBeTruthy()
-    expect(respond).not.toHaveBeenCalled()
+    expect(answer).not.toHaveBeenCalled()
   })
 
   it('closes only the context menu on Escape', () => {
-    const { matched, respond } = match()
+    const { matched, answer } = match()
     render(<DocReviewPanel matched={matched} {...kit} />)
 
     fireEvent.contextMenu(document.querySelector('[data-line="5"]') as HTMLElement, { clientX: 10, clientY: 10 })
@@ -472,7 +456,7 @@ describe('DocReviewPanel', () => {
 
     expect(screen.queryByRole('button', { name: zh['comment.add'] })).toBeNull()
     expect(screen.getByRole('dialog', { name: '概要设计：仓库管理' })).toBeTruthy()
-    expect(respond).not.toHaveBeenCalled()
+    expect(answer).not.toHaveBeenCalled()
   })
 
   it('restores persisted comments on remount for the same wait key', () => {
@@ -504,20 +488,15 @@ describe('DocReviewPanel', () => {
   })
 
   it('clears persisted comments defensively on dismiss (去聊天里说)', async () => {
-    const { matched, respond } = match()
+    const { matched, answer, cancel } = match()
     render(<DocReviewPanel matched={matched} {...kit} />)
 
     // A stale persisted entry from an earlier session is cleared by dismiss.
     seedComments([{ id: 'old', line: 3, text: '旧', createdAt: 1, updatedAt: 1 }])
     fireEvent.click(screen.getByRole('button', { name: zh['action.cancel'] }))
 
-    expect(respond).toHaveBeenCalledWith({
-      type: 'client-response', rpcId: RpcId('q-1'),
-      result: {
-        ok: false,
-        error: { code: 'cancelled', message: 'the user closed this question request', details: {} },
-      },
-    })
+    expect(cancel).toHaveBeenCalledTimes(1)
+    expect(answer).not.toHaveBeenCalled()
     await waitFor(() => expect(localStorage.getItem(KEY)).toBeNull())
   })
 
@@ -526,7 +505,7 @@ describe('DocReviewPanel', () => {
       { id: 'c1', line: 3, text: '意见', createdAt: 1, updatedAt: 1 },
       { id: 'c2', line: 5, text: '意见2', createdAt: 2, updatedAt: 2 },
     ])
-    const { matched } = match({ questions: questions() }, vi.fn(() => new Promise(() => {})))
+    const { matched } = match(questions(), vi.fn(async (_batch: AnswerBatch) => new Promise<void>(() => {})))
     render(<DocReviewPanel matched={matched} {...kit} />)
 
     fireEvent.click(screen.getByRole('button', { name: zh['comment.submitAll'] }))
@@ -543,13 +522,13 @@ describe('DocReviewPanel', () => {
 
   it('keeps an out-of-range comment in the count and the aggregated feedback', () => {
     seedComments([{ id: 'far', line: 99, text: '越界意见', createdAt: 1, updatedAt: 1 }])
-    const { matched, respond } = match()
+    const { matched, answer } = match()
     render(<DocReviewPanel matched={matched} {...kit} />)
 
     expect(screen.getByText('1 条评论')).toBeTruthy()
     expect(screen.queryByText('越界意见')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: zh['comment.submitAll'] }))
-    expect(respond).toHaveBeenCalledWith(customEnvelope('对于第99行，我认为应越界意见'))
+    expect(answer).toHaveBeenCalledWith(custom('对于第99行，我认为应越界意见'))
   })
 
   it('renders the new copy in English under the en locale', () => {

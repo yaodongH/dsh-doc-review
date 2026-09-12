@@ -1,16 +1,25 @@
 /**
- * Claim logic for the document-review takeover: which pending question waits
- * this plugin renders. A document review is ONE question whose detail is a
+ * Claim logic for the document-review takeover: which pending interaction this
+ * plugin renders. A document review is ONE question whose detail is a
  * rendered markdown document (it carries an ATX heading) with at most three
  * single-select options and either no presentation intent or the plan-review
  * intent. Every other request stays on the built-in question composer, so the
  * plugin only changes the surface for document-shaped materials.
  */
-import type { PendingWait } from '@deepseek-ai/dsh-client-runtime/client'
 import type { ComposerChainProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { PendingQuestion } from '@deepseek-ai/dsh-client-ui-user-questions/client'
 
-/** One question item of the carrier payload, as the wire carries it. */
-type QuestionItem = PendingWait<'question'>['payload']['questions'][number]
+/**
+ * The pending-question facts this takeover renders and answers with: the
+ * question domain's own carrier, narrowed to the five members the modal, the
+ * comment store and the decision footer touch.
+ */
+export type QuestionCarrier = Pick<
+  PendingQuestion, 'key' | 'kind' | 'questions' | 'answer' | 'cancel'
+>
+
+/** One question item of the carrier, as the wire carries it. */
+type QuestionItem = QuestionCarrier['questions'][number]
 
 /** The document test: an ATX heading line anywhere in the detail. */
 const HEADING = /^#{1,6}\s+\S/m
@@ -42,7 +51,9 @@ export interface DocumentReview {
 
 /** The chain-match result: the carrier plus the narrowed review. */
 export interface DocumentReviewWait {
-  wait: PendingWait<'question'>
+  /** The pending question this takeover answers and cancels. */
+  interaction: QuestionCarrier
+  /** The narrowed review. */
   review: DocumentReview
 }
 
@@ -52,19 +63,23 @@ function isDocument(detail: unknown): detail is string {
 }
 
 /**
- * Narrow a question wait to a document review, or return null to leave it to
- * the built-in question composer.
+ * Narrow a pending question carrier to a document review, or return null to
+ * leave it to the built-in question composer.
  *
  * The takeover claims a request only when it can render every answer that
  * request allows, so the batch must be a single question that carries a
  * document-shaped detail and at most three single-select options; anything
  * the modal's decision row cannot express stays on the generic flow.
  *
- * @param wait - the pending question carrier.
+ * @param interaction - the Session's effective pending interaction.
  * @returns The narrowed review, or null when the generic flow owns it.
  */
-export function documentReviewOf(wait: PendingWait<'question'>): DocumentReviewWait | null {
-  const questions = wait.payload.questions
+export function documentReviewOf(interaction: QuestionCarrier): DocumentReviewWait | null {
+  // The assembled Client unions every domain's carrier (approvals included);
+  // this program compiles against the question member alone, so the domain
+  // discriminator is re-read here rather than trusted from the type.
+  if (interaction.kind !== 'question' && interaction.kind !== 'plan-review') return null
+  const questions = interaction.questions
   if (questions.length !== 1) return null
   // Length-checked above; the index read is the narrowing tax, not a guess.
   const question = questions[0] as QuestionItem
@@ -74,7 +89,7 @@ export function documentReviewOf(wait: PendingWait<'question'>): DocumentReviewW
   const options = question.options ?? []
   if (options.length > MAX_OPTIONS) return null
   return {
-    wait,
+    interaction,
     review: {
       id: question.id,
       question: question.question,
@@ -87,17 +102,14 @@ export function documentReviewOf(wait: PendingWait<'question'>): DocumentReviewW
 }
 
 /**
- * Composer-chain selector: claim the first pending question wait that is a
- * document review. Runs at priority -1 (before the built-in question
- * composer's default 0), so document reviews get the modal surface and every
- * other pending question falls through unchanged.
+ * Composer-chain selector: claim the Session's effective pending interaction
+ * when it is a document review. Runs at priority -1 (before the built-in
+ * question composer's default 0), so document reviews get the modal surface
+ * and every other pending interaction falls through unchanged.
  *
  * @param owner - the composer chain currency dispatched by ConversationRoot.
  * @returns The narrowed document review, or null to leave the chain to the next entry.
  */
-export function selectDocumentReview({ interactions }: ComposerChainProps): DocumentReviewWait | null {
-  const wait = interactions.find(
-    (interaction): interaction is PendingWait<'question'> => interaction.kind === 'question',
-  )
-  return wait === undefined ? null : documentReviewOf(wait)
+export function selectDocumentReview({ pendingInteraction }: ComposerChainProps): DocumentReviewWait | null {
+  return pendingInteraction === undefined ? null : documentReviewOf(pendingInteraction)
 }

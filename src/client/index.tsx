@@ -2,13 +2,15 @@
  * Document-review plugin, browser half: DocReviewPanel registered as a
  * selector-routed entry of the conversation-declared composer chain, plus the
  * `doc-review` dictionaries and the surface stylesheet. The selector claims
- * document-shaped question waits (claim.ts) at priority -1 — before the
+ * document-shaped question carriers (claim.ts) at priority -1 — before the
  * built-in question composer's default 0 — so design documents and plan
- * reviews open in the review modal, while every other pending question falls
- * through to the built-in composer unchanged. The whole behavior surface
- * rides the carrier; copy rides the standard locale seat.
+ * reviews open in the review modal, while every other pending interaction
+ * falls through to the built-in composer unchanged. The whole behavior
+ * surface rides the carrier; copy rides the standard locale seat.
  */
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
+// Type-only: pulls the ui-renderer Context merge (ctx.slots).
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 // Type-only: pulls the ui-conversation SlotMap merge (the
 // 'conversation.composer' chain entry) into this program, so the register
 // options and PropsRuntime resolve.
