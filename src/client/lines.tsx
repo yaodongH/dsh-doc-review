@@ -15,7 +15,7 @@
 import { useMemo, useRef } from 'react'
 import type { ReactNode } from 'react'
 import {
-  Button, IconEditOutline16, IconPlusOutline16, IconTrashOutline16, useDismissOnOutsidePointer,
+  Button, IconEditOutlineRegular, IconPlusOutlineRegular, IconTrashOutlineRegular, useDismissOnOutsidePointer,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { DocComment } from './comments.ts'
 import type { DocReviewKey } from './locales.ts'
@@ -408,7 +408,7 @@ export function LineGrid({
                         disabled={busy}
                         onClick={() => { onEditOpen(comment.id) }}
                       >
-                        <IconEditOutline16 />
+                        <IconEditOutlineRegular />
                       </button>
                       <button
                         type="button"
@@ -417,7 +417,7 @@ export function LineGrid({
                         disabled={busy}
                         onClick={() => { onDelete(comment.id) }}
                       >
-                        <IconTrashOutline16 />
+                        <IconTrashOutlineRegular />
                       </button>
                     </div>
                   </div>
@@ -457,7 +457,7 @@ export function LineGrid({
             className="dr-context-menu-item"
             onClick={() => { onDraftOpen(contextMenu.line); onContextMenuClose() }}
           >
-            <IconPlusOutline16 />
+            <IconPlusOutlineRegular />
             {t('comment.add')}
           </button>
         </div>

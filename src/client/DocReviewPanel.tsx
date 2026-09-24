@@ -31,7 +31,7 @@
 
 import { useMemo, useState } from 'react'
 import {
-  Button, IconCloseOutline16, IconFullscreenOutline16, Modal,
+  Button, IconCloseOutlineRegular, IconFullscreenOutlineRegular, Modal,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { DocumentReview, DocumentReviewWait } from './claim.ts'
@@ -382,7 +382,7 @@ export function DocReviewPanel({ matched, t }: DocReviewPanelProps) {
               disabled={busy}
               onClick={() => { setExpanded(true) }}
             >
-              <IconFullscreenOutline16 size={16} />
+              <IconFullscreenOutlineRegular size={16} />
             </button>
           )}
         </div>
@@ -405,7 +405,7 @@ export function DocReviewPanel({ matched, t }: DocReviewPanelProps) {
             <h2 className="dr-modal-title">{title}</h2>
           </div>
           <button type="button" className="dr-modal-close" aria-label={t('doc.close')} onClick={closeReview}>
-            <IconCloseOutline16 size={14} />
+            <IconCloseOutlineRegular size={14} />
           </button>
         </div>
         <p className="dr-modal-question">{review.question}</p>
