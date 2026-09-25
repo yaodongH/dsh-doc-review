@@ -1,7 +1,7 @@
 {
   "name": "dsh-doc-review",
-  "version": "0.1.2",
-  "description": "Document-review modal for DeepSeek Harness web: design documents and plan reviews open in a full rendered-markdown modal instead of the compact composer card.",
+  "version": "0.2.0",
+  "description": "Inline comments on the native plan-review page: the pending review's sidebar tab is taken over as a commentable, fully native-rendered document.",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -38,7 +38,10 @@
       "inject": [
         "@deepseek-ai/dsh-client-ui-renderer",
         "@deepseek-ai/dsh-client-ui-slots",
-        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-plan",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-resources",
         "@deepseek-ai/dsh-client-ui-user-questions",
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-ui-primitives"
@@ -56,9 +59,12 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-client-locale": "0.1.7-alpha.2",
-    "@deepseek-ai/dsh-client-ui-conversation": "0.1.7-alpha.2",
+    "@deepseek-ai/dsh-client-resources": "0.1.7-alpha.2",
+    "@deepseek-ai/dsh-client-store": "0.1.7-alpha.2",
     "@deepseek-ai/dsh-client-ui-primitives": "0.1.7-alpha.2",
     "@deepseek-ai/dsh-client-ui-renderer": "0.1.7-alpha.2",
+    "@deepseek-ai/dsh-client-ui-session": "0.1.7-alpha.2",
+    "@deepseek-ai/dsh-client-ui-sidebar-right": "0.1.7-alpha.2",
     "@deepseek-ai/dsh-client-ui-slots": "0.1.7-alpha.2",
     "@deepseek-ai/dsh-client-ui-user-questions": "0.1.7-alpha.2",
     "react": "^18.2.0"
@@ -66,13 +72,17 @@
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-client-locale": "0.1.7-alpha.2",
-    "@deepseek-ai/dsh-client-ui-conversation": "0.1.7-alpha.2",
+    "@deepseek-ai/dsh-client-resources": "0.1.7-alpha.2",
+    "@deepseek-ai/dsh-client-store": "0.1.7-alpha.2",
     "@deepseek-ai/dsh-client-ui-primitives": "0.1.7-alpha.2",
     "@deepseek-ai/dsh-client-ui-renderer": "0.1.7-alpha.2",
+    "@deepseek-ai/dsh-client-ui-session": "0.1.7-alpha.2",
+    "@deepseek-ai/dsh-client-ui-sidebar-right": "0.1.7-alpha.2",
     "@deepseek-ai/dsh-client-ui-slots": "0.1.7-alpha.2",
     "@deepseek-ai/dsh-client-ui-user-questions": "0.1.7-alpha.2",
     "@testing-library/dom": "^10.4.0",
     "@testing-library/react": "^16.3.0",
+    "@types/mdast": "^4.0.4",
     "@types/node": "^22.20.0",
     "@types/react": "~18.3.1",
     "@types/react-dom": "~18.3.7",
@@ -88,5 +98,12 @@
     "type": "git",
     "url": "git+https://github.com/yaodongH/dsh-doc-review.git"
   },
-  "homepage": "https://github.com/yaodongH/dsh-doc-review"
+  "homepage": "https://github.com/yaodongH/dsh-doc-review",
+  "dependencies": {
+    "mdast-util-from-markdown": "^2.0.3",
+    "mdast-util-gfm": "^3.1.0",
+    "mdast-util-math": "^3.0.0",
+    "micromark-extension-gfm": "^3.0.0",
+    "micromark-extension-math": "^3.1.0"
+  }
 }

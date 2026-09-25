@@ -1,55 +1,28 @@
 /**
- * Comment data layer for the document-review line comments: the data model,
- * pure CRUD reducers, the aggregation formatter, and localStorage
- * persistence. Pure logic with no React/DOM dependencies — every storage
- * entry point is try/catch-guarded and degrades silently to in-memory state
- * when localStorage is unavailable, so a hardened webview can never break the
- * panel.
+ * Comment data layer for the review tab's block comments: the data model,
+ * pure CRUD reducers, and the aggregation formatter. Pure logic with no
+ * React/DOM/storage dependencies — persistence lives in the shared review
+ * store (engine persistence), so this module stays side-effect free.
  */
 
-/** Schema version stored in every persisted payload. */
-export const STORAGE_VERSION = 1 as const
-
-/**
- * localStorage namespace prefix for persisted comment state. The full key is
- * `STORAGE_PREFIX + wait.key` — wait.key is stable across baseline replay
- * (`q:<rpcId>` for question waits), so comments survive refresh, remount and
- * session switches as long as the review has not been settled.
- */
-export const STORAGE_PREFIX = 'dsh-doc-review:v1:comments:' as const
-
-/** One line comment. Lines are 1-based source lines of the reviewed detail. */
+/** One comment, anchored to the block starting at source line `line`. */
 export interface DocComment {
   /** Unique id (crypto.randomUUID() when available, else timestamp+random). */
   id: string
-  /** 1-based source line the comment anchors to. */
+  /** 1-based source line the comment anchors to: its block's first line. */
   line: number
+  /**
+   * 1-based source line the anchor block ends on; the quoted 原文 spans
+   * line…endLine. Absent for single-line anchors and for states persisted by
+   * an older schema.
+   */
+  endLine?: number
   /** Comment body, trimmed and non-empty at creation. */
   text: string
   /** Epoch ms of creation. */
   createdAt: number
   /** Epoch ms of the last edit. */
   updatedAt: number
-}
-
-/** The persisted payload shape. `detailHash` is an optional defense-in-depth
- * guard against rpcId reuse across changed documents. */
-export interface StoredCommentsState {
-  version: 1
-  detailHash?: string
-  comments: DocComment[]
-}
-
-/** 1-based source-line split: index i maps to source line i+1; empty input
- * yields a single empty line. */
-export function splitLines(markdown: string): string[] {
-  return markdown.split('\n')
-}
-
-/** Raw text of the 1-based source line `n`, untrimmed; out of range → ''. */
-export function lineTextAt(lines: readonly string[], n: number): string {
-  if (!Number.isInteger(n) || n < 1 || n > lines.length) return ''
-  return lines[n - 1] ?? ''
 }
 
 /** Unique id: crypto.randomUUID() when available, else timestamp+random. */
@@ -62,20 +35,33 @@ function generateId(now: number): string {
 
 /** One comment from a draft; throws on invalid input (defensive — the UI
  * disables empty drafts before this can run). */
-export function createComment(line: number, text: string, now: number): DocComment {
-  if (!Number.isInteger(line) || line < 1) throw new RangeError('comment line must be >= 1')
+export function createComment(
+  anchor: { readonly line: number; readonly endLine?: number },
+  text: string,
+  now: number,
+): DocComment {
+  if (!Number.isInteger(anchor.line) || anchor.line < 1) throw new RangeError('comment line must be >= 1')
   const trimmed = text.trim()
   if (trimmed === '') throw new Error('comment text must be non-empty')
-  return { id: generateId(now), line, text: trimmed, createdAt: now, updatedAt: now }
+  const comment: DocComment = {
+    id: generateId(now),
+    line: anchor.line,
+    text: trimmed,
+    createdAt: now,
+    updatedAt: now,
+  }
+  if (anchor.endLine !== undefined && anchor.endLine >= anchor.line) comment.endLine = anchor.endLine
+  return comment
 }
 
 /** Immutable append; returns a new array. */
 export function addComment(
   comments: readonly DocComment[],
-  draft: { line: number; text: string },
+  anchor: { readonly line: number; readonly endLine?: number },
+  text: string,
   now: number,
 ): DocComment[] {
-  return [...comments, createComment(draft.line, draft.text, now)]
+  return [...comments, createComment(anchor, text, now)]
 }
 
 /** Immutable edit of one comment's text; empty trimmed text or an unknown id
@@ -103,92 +89,62 @@ export function deleteComment(comments: readonly DocComment[], id: string): DocC
   return comments.filter(comment => comment.id !== id)
 }
 
+/** The minimal block shape the aggregation reads. */
+export interface SourceBlockLike {
+  /** 1-based source line the block starts on. */
+  readonly startLine: number
+  /** 1-based source line the block ends on (inclusive). */
+  readonly endLine: number
+  /** The block's raw source, verbatim. */
+  readonly source: string
+}
+
 /**
- * Aggregate comments into the review-feedback sentence, one line per comment:
- * `对于第N行{原文}，我认为应{评论}` — sorted by line (then createdAt, then id),
- * whitespace-only comments excluded, joined with `\n`. The original line text
- * is the 1-based source line, trimmed but not truncated; an out-of-range line
- * still contributes with an empty 原文.
+ * Aggregate comments into the review-feedback text, one line per comment:
+ * `对于第N行{原文}，我认为应{评论}` — sorted by anchor line (then createdAt,
+ * then id), whitespace-only comments excluded, joined with `\n`. The quoted
+ * 原文 is the anchor block's raw source, trimmed; an anchor that no longer
+ * matches a block still contributes, with an empty quote.
+ *
+ * @param comments - every comment of the review.
+ * @param blocks - the parsed block model of the reviewed document.
+ * @returns The aggregated feedback, or '' when nothing qualifies.
  */
-export function buildFeedback(comments: readonly DocComment[], lines: readonly string[]): string {
+export function buildFeedback(
+  comments: readonly DocComment[],
+  blocks: readonly SourceBlockLike[],
+): string {
   const kept = comments
     .filter(comment => comment.text.trim() !== '')
     .sort((a, b) => a.line - b.line || a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
   if (kept.length === 0) return ''
   return kept
-    .map(comment => `对于第${comment.line}行${lineTextAt(lines, comment.line).trim()}，我认为应${comment.text}`)
+    .map((comment) => {
+      const quote = quotedSourceOf(comment, blocks)
+      return `对于第${comment.line}行${quote}，我认为应${comment.text}`
+    })
     .join('\n')
 }
 
-/** FNV-1a 32-bit hash of the detail, base36 — deterministic, collision-safe
- * enough for the optional detailHash persistence guard. */
+/** The 原文 of one comment's anchor block, trimmed. */
+function quotedSourceOf(
+  comment: DocComment,
+  blocks: readonly SourceBlockLike[],
+): string {
+  const endLine = comment.endLine ?? comment.line
+  const block = blocks.find(candidate =>
+    candidate.startLine === comment.line && candidate.endLine === endLine)
+    ?? blocks.find(candidate => comment.line >= candidate.startLine && comment.line <= candidate.endLine)
+  return (block?.source ?? '').trim()
+}
+
+/** FNV-1a 32-bit hash of the document, base36 — the persisted comment state's
+ * content guard against a wait key reused across changed documents. */
 export function detailHashOf(detail: string): string {
   let hash = 0x811c9dc5
-  for (let i = 0; i < detail.length; i++) {
-    hash ^= detail.charCodeAt(i)
+  for (const char of detail) {
+    hash ^= char.codePointAt(0) ?? 0
     hash = Math.imul(hash, 0x01000193)
   }
   return (hash >>> 0).toString(36)
-}
-
-/** The localStorage key for one wait's comment state. */
-export function storageKey(waitKey: string): string {
-  return STORAGE_PREFIX + waitKey
-}
-
-/** Per-entry shape validation: filters malformed comments, keeps the rest. */
-function isValidComment(value: unknown): value is DocComment {
-  if (typeof value !== 'object' || value === null) return false
-  const comment = value as Record<string, unknown>
-  return typeof comment.id === 'string' && comment.id !== ''
-    && typeof comment.line === 'number' && Number.isInteger(comment.line) && comment.line >= 1
-    && typeof comment.text === 'string' && comment.text.trim() !== ''
-    && typeof comment.createdAt === 'number' && Number.isFinite(comment.createdAt)
-    && typeof comment.updatedAt === 'number' && Number.isFinite(comment.updatedAt)
-}
-
-/** Load persisted comments; any failure (unavailable storage, corrupt JSON,
- * wrong version, mismatched detail hash, malformed entries) degrades to [] or
- * drops only the malformed entries. Never throws. */
-export function loadComments(waitKey: string, expectedHash?: string): DocComment[] {
-  try {
-    const raw = localStorage.getItem(storageKey(waitKey))
-    if (raw === null) return []
-    const parsed: unknown = JSON.parse(raw)
-    if (typeof parsed !== 'object' || parsed === null) return []
-    const state = parsed as Record<string, unknown>
-    if (state.version !== STORAGE_VERSION) return []
-    if (expectedHash !== undefined
-      && state.detailHash !== undefined
-      && state.detailHash !== expectedHash) return []
-    if (!Array.isArray(state.comments)) return []
-    return state.comments.filter(isValidComment)
-  } catch {
-    return []
-  }
-}
-
-/** Persist comment state; storage failures are silent (in-memory state
- * remains usable for the session). Never throws. */
-export function saveComments(
-  waitKey: string,
-  comments: readonly DocComment[],
-  detailHash?: string,
-): void {
-  try {
-    const state: StoredCommentsState = { version: STORAGE_VERSION, comments: [...comments] }
-    if (detailHash !== undefined) state.detailHash = detailHash
-    localStorage.setItem(storageKey(waitKey), JSON.stringify(state))
-  } catch {
-    // unavailable / quota — degrade silently
-  }
-}
-
-/** Remove persisted comment state; storage failures are silent. Never throws. */
-export function clearComments(waitKey: string): void {
-  try {
-    localStorage.removeItem(storageKey(waitKey))
-  } catch {
-    // unavailable — nothing to clear
-  }
 }

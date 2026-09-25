@@ -1,8 +1,8 @@
 {
   "id": "dsh-external/dsh-doc-review",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "main": "./lib/index.js",
-  "description": "Document-review modal: design documents and plan reviews open in a full rendered-markdown modal.",
+  "description": "Inline comments on the native plan-review page: the pending review's sidebar tab is taken over as a commentable, fully native-rendered document.",
   "engines": {
     "dsh": ">=0.0.1"
   },

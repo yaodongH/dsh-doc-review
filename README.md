@@ -1,220 +1,147 @@
 # dsh-doc-review
 
-> DeepSeek Harness Web 客户端插件——将设计文档与方案审阅从紧凑卡片升级为全幅渲染 Markdown 弹窗。
+> DeepSeek Harness Web 客户端插件——在原生 plan-review 页面上叠加行内评论能力：审阅文档仍由原生渲染，评论以原生风格卡片骑在渲染流里。
 
 ## 问题背景
 
-DeepSeek Harness Web 内置的问题编辑器（`QuestionComposer`）为通用提问设计：标题、选项列表、自定义输入框，整体是一张紧凑卡片。这种布局适合「选择方案 A 还是 B」这类简短问题。
+DSH `0.1.7` 起，plan-review 请求由原生流程接管：紧凑决策卡片（同意执行 / 要求修改）负责应答，`ui-plan` 把完整文档自动打开到右侧边栏，正文用原生 `MarkdownText` 渲染。这个流程已经很好，唯独**不能在文档上写评论**——想对方案某一段提意见，只能去聊天里手打「对于第 N 行…」。
 
-但当内容是**完整的 Markdown 设计文档**——包含标题层级、模块划分表格、接口定义代码块、风险列表——时，卡片内 60vh / 520px 的滚动区域显得局促，标题、表格和代码块混在狭窄的卡片体里，审阅体验不佳。
+`dsh-doc-review` 0.2.0 不再自建审阅页面（0.1.x 的全屏弹窗已删除）。它通过**扩展点**接管原生审阅的侧边栏文档 tab，在原生渲染之上叠加行内评论：
 
-`dsh-doc-review` 插件将文档形态的提问替换为一个**全屏弹窗**，以渲染后的 Markdown 全幅展示设计文档，同时保留完整的交互能力（选项选择、自定义意见、取消）。
+- 文档渲染**完全是原生 `MarkdownText`**——标题、表格、代码高亮、KaTeX 公式全部保真；没有评论时正文就是原生预览本身；
+- 评论锚定在**块**（mdast 顶层节点）上，以原生风格卡片插在渲染流的段缝里；
+- 聚合反馈经原生决策载体送出，应答编码与内置流程逐字一致。
 
 ## 效果展示
 
-### 弹窗主视图（中文环境）
+### 决策卡片 + 未提交评论徽标
 
-文档以全宽渲染，标题、列表、表格、代码块完整呈现。弹窗页脚两行：选项按钮一行（左）+ 取消（右），输入框一行。
+原生卡片保持「同意执行 / 要求修改」不变；插件的徽标「N 条未提交评论」插在卡片操作条里，提醒还有意见没送出。
 
-![弹窗主视图](demo/modal-open-zh.png)
+![整页视图](demo/review-fullpage-zh.png)
 
-### 整页视图
+### 侧边栏审阅 tab：原生渲染 + 段缝评论
 
-弹窗覆盖整个浏览器视口，文档正文区域可滚动，标题栏和操作栏固定不动。
+文档全保真渲染（表格、行内代码、列表均为原生排版），评论卡锚定第 4 行，插在段缝里；页脚为「1 条评论 · 清空评论 · 提交评论」。
 
-![整页视图](demo/modal-fullpage-zh.png)
+![审阅 tab](demo/review-tab-zh.png)
 
-### 收起控制条
+### 悬浮添加入口
 
-关闭弹窗（X / Esc）后，编辑器区保留一条紧凑的控制条——文档标题 + 「展开完整文档」按钮 + 选项按钮 + 取消。**关闭弹窗不等于取消请求**，随时可以重新展开。
+hover 任意渲染块，块右上角浮出「+」；或选中文本后右键，直接在该块后插入评论编辑器。
 
-![收起控制条](demo/bar-collapsed-zh.png)
+![悬浮入口](demo/review-affordance-zh.png)
 
 ## 适用场景
 
-本插件接管以下两种文档审阅路径：
+接管两种审阅路径的侧边栏文档 tab（决策卡片仍归原生）：
 
-| 来源 | 触发方式 | 路径 |
+| 来源 | 文档地址 | 触发 |
 |---|---|---|
-
-| 标准 plan-mode | `/plan` 后 `exit_plan_mode` 提交方案审阅 | 宿主 `dsh-plan-mode` → `userQuestions.ask` |
-
-两者提交到客户端的问题形态相同（`plan-review` 意图 + 文档 Markdown detail + ≤ 2 个选项），本插件统一接管。
-
-未被认领的提问（短问题、无标题 detail、多选、>3 选项、未知意图等）原样落回内置问题编辑器，行为零变化。
+| 标准 plan-mode | `dsh-resource://plan/**`（logged plan） | `/plan` 后 `exit_plan_mode` 提交 |
+| 自适应流水线等自定义 ask | `dsh-resource://plan-review/**`（临时预览） | 携带 `plan-review` 意图的 `ask_user_question` |
 
 ## 功能特性
 
-### 文档渲染
+### 行内评论（块锚点）
 
-- GFM Markdown 全量渲染：标题层级、列表、表格、代码块（含语法高亮）、KaTeX 数学公式、脚注。
-- 宽表格在弹窗内横向滚动（聊天流的容器查询突围仅作用于消息列）。
+- **添加**：hover 任意渲染块 → 右上角「+」；或选中文本右键直接锚定。
+- **编辑 / 删除**：评论卡上的 ✎ / 🗑；编辑态预填原文。
+- **锚点**：块级——段落、标题、列表项独立可评；表格、代码围栏、公式整块吸附（评论卡显示在整块后，反馈仍精确引用块内起始行与原文）。
+- **持久化**：评论存入共享 store（引擎持久化，`dsh-doc-review:comments.<session>`），刷新 / 重挂载不丢；提交成功后清除。每条评论带文档内容哈希护栏，防止 wait key 复用串味。
 
-### 交互能力
+### 提交反馈
 
-- **选项按钮**：单选即提交，与内置流程答案编码一致（原样携带提问方标签）。
-- **自定义意见**：单行输入框 + 提交按钮，用于补充修改意见。
-- **去聊天里说**：以 `ASK_CANCELLED` 拒绝请求，编辑器恢复为普通聊天状态。
-- **一次性锁**：点击后禁用所有操作，直到宿主响应落定；失败自动重臂并显示错误。
+- **聚合**：按锚点行升序逐条聚合为 `对于第N行{块原文}，我认为应{评论}`，经载体 `answer` 以 `{ selected: [], custom }` 送出——宿主视为「继续修改 + 反馈」，与内置语义一致。
+- **徽标**：评论未提交时，决策卡片上显示「N 条未提交评论」；徽标本身就是提交按钮（侧边栏关闭时也能提交）。原生批准按钮常驻——批准会丢弃未提交的评论（设计取舍，见「已知限制」）。
+- **一次性锁**：提交后全部操作禁用直到宿主应答落定；失败自动重臂并显示原因。
 
-### 弹窗行为
+### 只读回退
 
-- **自动弹出**：文档类提问到达时弹窗立即打开，无需手动触发。
-- **关闭不取消**：X / Esc / 点击遮罩层关闭弹窗，请求保持待审状态。
-- **重新展开**：控制条上的「展开完整文档」按钮重新打开弹窗。
-- **重连恢复**：页面刷新或断连重连后，待审弹窗随组件重开。
-
-### 文档行内评论
-
-审阅弹窗正文以「行网格」渲染（插件自研渲染器，见「技术方案概览」），每一源行带可点击的行号槽：
-
-- **添加评论**：选中文本后右键 → 自定义 popup「添加评论」（或直接点击行号槽）→ 该行下方内联展开编辑态（textarea + 发布 / 取消）→ 发布后以紧凑评论块展示在对应行下，提供编辑（✎）/ 删除（🗑）两个 16px icon 按钮；编辑态预填原文，删除即时生效（无单条确认）。
-- **页脚互斥**：存在任意评论时，弹窗页脚与收起控制条同时切换为「提交评论 / 取消」，选项按钮、自定义输入与「去聊天里说」全部隐藏——评论存在时无法直接批准。
-- **提交评论**：按行号升序聚合为一条意见，每条逐字 `对于第N行{原文内容}，我认为应{评论内容}`（空评论排除、`\n` 拼接、原文取源行 trim 不截断），经既有 `{ selected: [], custom }` 信封发送；成功后清空评论与持久化。
-- **取消**：弹出二级确认 Modal（确定 / 再想想）；确定仅清空本地（不发任何应答）并恢复普通决策页脚；再想想 / Esc / 遮罩仅关闭确认框。
-- **持久化**：评论按 `dsh-doc-review:v1:comments:<wait.key>` 存入 localStorage（`wait.key` 跨基线回放稳定），刷新 / 重挂载 / 收起展开 / 会话切换均不丢失；提交成功与「去聊天里说」dismiss 路径都会清除持久化。存储损坏 / 版本不符 / 非法条目自动降级或过滤，localStorage 不可用时静默退化为内存态。
-
-### 国际化
-
-- 插件自身文案（标题 / 展开 / 关闭 / 取消 / 提交等）双语（zh / en），注册于 `doc-review` locale 命名空间，随界面语言自动切换。
-- plan-review 意图的英文选项标签（宿主 `dsh-plan-mode` 写死的 `Approve` / `Keep planning`）按意图语义显示本地化按钮文案（确认执行 / 拒绝），tooltip 保留提问方描述，**发送的答案值始终是原标签**。
-- 中文标签（自适应流水线的「确认定稿」）原样显示，不做替换。
+载体不匹配（已答复、被更高优先级交互抢占、刷新后临时预览失效）时，tab 回退为原生只读预览：完整渲染、无评论入口。插件卸载后，原生预览自动恢复接管。
 
 ## 技术方案概览
 
-### 架构
-
-`dsh-doc-review` 是一个纯浏览器端的 Cordis 客户端插件，宿主侧（node half）为空——仅需一个空 `apply()` 使 Loader 能挂载行，浏览器半通过 `dsh.client` 声明由 Web 模块表动态加载。
+### 扩展点（零 DSH 源码改动）
 
 ```
-conversation.composer chain
-  priority -1  ← dsh-doc-review（文档提问：弹窗接管）
-  priority  0  ← dsh-client-ui-user-questions（通用提问：卡片流程）
-  priority  0  ← dsh-client-ui-approval / dsh-client-ui-subagent（审批、只读子代理）
+sidebarRightTabs.register({ kind: 'plan-review', patterns: [plan/**, plan-review/**],
+                            priority: 'extension' })        ← 接管 review 文档 tab
+slots.register('sidebar.right.pane.tab', key: 'dsh-doc-review')  ← tab 正文（分段渲染 body）
+slots.register('sidebar.right.pane.tab.title', key)               ← tab 标题
+slots.register('conversation.plan-review.actions', id)            ← 决策卡片徽标 + 提交入口
 ```
 
-插件以 `priority: -1` 注册进 `conversation.composer` 键控链式 slot。Chain 按优先级升序运行 selector，首个非空即胜出——文档类提问被本插件认领后，内置问题编辑器的 selector 不再执行；其余提问原样落回。
+- **extension 接管**：侧边栏 tab 注册表的官方协议——extension 优先于 builtin，`canOpen` 仍生效；插件卸载后 builtin 恢复。原生 `PlanReviewOpen` 的自动打开无需改动，路由直接落到插件的 tab。
+- **载体获取**：不占 `conversation.composer` 链，通过全局标准 hook `useSessionStatus` 读取会话生效的待答交互，用 tab 地址里的 requestKey / callId 精确匹配；纯收窄谓词复用 0.1.x 的 `documentReviewOf()`。
+- **应答**：`PendingQuestion.answer({ answers: [{ id, selected: [], custom }] })`，与 0.1.x 逐字一致。
 
-链主（chain owner）传入的是当前会话**唯一生效**的待答交互 `pendingInteraction`（`ComposerChainProps`），不是交互列表：同一时刻只有一个交互在等用户（`dsh-client-ui-session` 的待答交互注册表按优先级选出一个）。提问方的载体是 `dsh-client-ui-user-questions` 的 `PendingQuestion` 实例，`kind` 为 `'question' | 'plan-review'`；审批方是 `dsh-client-ui-approval` 的 `PendingApproval`，`kind` 为 `'approval'`。
+### 分段渲染（评论骑在原生渲染上）
 
-因此 selector 先读 `kind` 判别域，再解引用其余字段：本插件只以 `import type` 引入 `PendingQuestion` 的类型，编译期看到的联合成员只有提问域这一个，而运行时装配出的客户端会传入**所有**域的载体——所以判别字段必须在运行时重读，不能只信类型。
+`blocks.ts` 用与原生渲染器**同一套 OSS mdast 栈**（mdast-util-from-markdown + micromark gfm/math，版本对齐）解析文档顶层块，每个块带精确行号区间与源文本。渲染按「锚点切段」：
 
-### 认领条件
+- 携带评论（或打开中的草稿）的块结束其所在段，每段一个原生 `MarkdownText` 实例；评论卡与行内编辑器作为普通 React 元素插在段缝。
+- **无评论 = 单段 = 原生预览本身**，零额外实例。
+- 段内块映射走「渲染后 DOM 顶层元素 ↔ mdast 块」索引对齐（跳过 definition/脚注区/html 文本节点），段落与标题再做归一化文本自校验；校验不过的段降级为「无添加入口」，渲染永远不受影响（插件的解析只决定锚点，渲染始终是原生的）。
 
-`claim.ts` 中的纯函数 `documentReviewOf()` 是认领谓词，chain selector 与组件共用。满足以下全部条件才接管：
+### 共享存储
 
-1. `kind` ∈ `{'question', 'plan-review'}`（`approval` 等其它域直接落回）；
-2. 单个 question（非多题批量）；
-3. `multiSelect` 非真；
-4. `intent` 为 `undefined` 或 `{ kind: 'plan-review' }`；
-5. `detail` 为含 Markdown ATX 标题行（`/^#{1,6}\s+\S/m`）的字符串；
-6. 选项数 ≤ 3。
+`review-store.ts` 声明一个 store 句柄，同时挂到 tab 正文与卡片徽标两个 session 作用域注册上（框架按 handle × scope 缓存单实例）——两个表面读写同一份实时评论状态，引擎持久化负责跨刷新。
 
-### 组件结构
+## 已知限制
 
-```
-DocReviewPanel
-├── dr-frame（根容器）
-│   ├── dr-bar（控制条，始终挂载）
-│   │   ├── dr-bar-head（圆点 + 标题 + 评论数徽标 + 展开按钮）
-│   │   └── dr-bar-body（弹窗关闭时：有评论→提交评论/取消；否则选项 + 取消）
-│   ├── Modal headless（弹窗，expanded 时打开）
-│   │   ├── dr-modal-head（kicker + 标题 + 关闭按钮）
-│   │   ├── dr-modal-question（问题文本）
-│   │   ├── dr-modal-body（LineGrid 行网格渲染，可滚动）
-│   │   └── dr-modal-footer（有评论→提交评论/取消；否则 DecisionRow）
-│   └── Modal headless（取消全部二级确认框，confirming 时打开）
-```
-弹窗正文由 `lines.tsx` 的 `LineGrid` 渲染：`classifyLines` 把源文档切成 1 起始行号的行模型（标题 / 列表 / 引用 / 分隔线 / 段落 / 空行，代码围栏与 GFM 表格按块聚合保留原文），行内 markdown 子集（粗体 / 斜体 / 行内代码 / 删除线 / http(s)·mailto 链接）自研解析；`comments.ts` 提供评论的 CRUD 纯函数、`buildFeedback` 聚合格式化与 localStorage 读写。
+- **原生批准常驻**：评论存在时不能隐藏批准按钮（卡片页脚无扩展点），以徽标提示；批准会丢弃未提交评论。
+- **跨段引用 / 脚注**：评论把「引用/脚注的使用点」与「定义」分隔到不同 `MarkdownText` 实例后，使用端回退为字面文本（计划文档中少见；检测与浮层回退留作后续）。
+- **段缝样式**：每个 `MarkdownText` 实例将首末子元素 margin 归零，插件在缝上补间距；`h4+列表` 的 8px 邻接收紧无法跨实例复现，影响可忽略。
+- **`\[…\]` TeX 定界符**：DSH 本地的 mathCompatibility 扩展不可复用，此类块的块边界可能与渲染端分歧——自校验捕获后该块降级为不可评论，渲染不受影响。
+- **列表项评论**：锚点与引用精确到列表项，评论卡显示在整段列表之后（有序列表拆段会重新编号，故不拆）。
+- 版本耦合：peer 依赖锁定 `0.1.7-alpha.2` 的原生 plan-review 流（与 0.1.2 相同策略）。
 
-弹窗使用 `Modal` 原语的 `headless` 模式——自建 header / body / footer 骨架，使标题栏和操作栏固定、文档正文独立滚动。内置 `Modal` 默认模式的 header 会随内容一起滚动，不适合文档审阅场景。
-
-### 答案编码
-
-逐字复用内置问题编辑器的应答语义——三个应答路径都走载体的自身方法（`PendingQuestion.answer` / `.cancel`），不再有 RPC 回执信封：
-
-| 操作 | 调用 | 宿主收到的答案 |
-|---|---|---|
-| 点击选项按钮 | `interaction.answer()` | `{ answers: [{ id, selected: [label] }] }` |
-| 自定义意见 + 提交 | `interaction.answer()` | `{ answers: [{ id, selected: [], custom: text }] }` |
-| 提交评论（有评论时） | `interaction.answer()` | `{ answers: [{ id, selected: [], custom: <聚合意见> }] }`（宿主视为反馈，非批准） |
-| 去聊天里说（取消） | `interaction.cancel()` | 请求以 `ASK_CANCELLED` 拒绝；plan-review 场景下宿主提示模型「用户改为直接说话」 |
-
-`label` 始终是提问方提供的原始标签（`Approve` / `确认定稿` 等），即使按钮显示的是本地化文案。载体已结算时两个方法都会抛错，面板据此重新解锁并显示原因。
-
-### 兼容性
-
-本插件是客户端 API 的消费方，`0.1.1` 起对齐 **DSH Client `0.1.5-alpha.1`** 的链路契约（`ComposerChainProps.pendingInteraction` 单一载体 + `PendingQuestion.answer/cancel`）。`0.1.0` 针对的是已被替换的旧契约（owner props 的 `interactions` 数组 + `PendingWait.respond` 回执），在 0.1.5 上每次渲染输入区都会抛 `Cannot read properties of undefined (reading 'find')` —— 该旧版本请勿与 0.1.5 客户端混用。
-
-### 构建产物
-
-`tsdown.config.ts` 产出三个目标：
-
-| 产物 | 格式 | 用途 |
-|---|---|---|
-| `lib/index.js` + `lib/invariant.js` | ESM | Loader node half |
-| `lib/client.js` | CJS bundle + `__ModuleLoader__` banner | 模块表动态行（row id: `dsh-doc-review`） |
-| `lib/client-registry.js` | 同上（id: `dsh-external/dsh-doc-review`） | 插件发现清单 |
-
-浏览器端外部化 `react`、`react/jsx-runtime`、`@deepseek-ai/dsh-client-ui-primitives`——通过模块表 `require()` 在运行时解析；其余 `@deepseek-ai/*` 类型导入在构建时擦除，不产生模块请求。
-
-### 文件结构
+## 文件结构
 
 ```
 dsh-doc-review/
-├── package.json              # 插件清单（dsh.client manifest + bundle patch）
-├── cordis.patch.yml          # Loader 行声明
-├── dsh.plugin.json           # 插件发现元数据
-├── tsconfig.json / .build.json
-├── tsdown.config.ts          # tsdown 打包配置（node ESM + 两个 client CJS）
-├── vitest.config.ts          # 测试配置（resolve.alias → DSH 源码）
+├── package.json / dsh.plugin.json / cordis.patch.yml
+├── tsdown.config.ts / vitest.config.ts
 ├── src/
 │   ├── index.ts              # node half（空 apply）
 │   ├── invariant.ts          # 包级不变量伴生
 │   └── client/
-│       ├── index.tsx          # 浏览器入口：注册词典 + 样式 + chain 条目
-│       ├── claim.ts           # 认领谓词 + 类型定义
-│       ├── DocReviewPanel.tsx # 主组件（弹窗 + 控制条 + 评论状态机）
-│       ├── comments.ts        # 评论数据层：CRUD 纯函数 + 聚合 + localStorage
-│       ├── lines.tsx          # 行网格渲染器（splitLines 分类 / 行内子集 / LineGrid）
-│       ├── locales.ts         # zh / en 词典
-│       └── styles.ts          # 注入式 CSS（dr- 前缀，仅用主题 token）
-├── tests/
-│   ├── carrier.ts                     # 共享夹具：PendingQuestion 形态的待答载体
-│   ├── claim.client.spec.ts           # 认领矩阵（19 项）
-│   ├── doc-review-panel.client.spec.tsx # 面板行为（32 项，含评论全链路 + i18n）
-│   └── comments.client.spec.ts        # 评论数据层 / 行模型纯逻辑（35 项）
-├── demo/                             # 验证截图
-│   ├── modal-open-zh.png             # 弹窗主视图
-│   ├── modal-fullpage-zh.png         # 整页视图
-│   └── bar-collapsed-zh.png          # 收起控制条
-├── smoke.mjs                    # 浏览器冒烟验证
-├── e2e-adaptive.mjs             # 自适应流水线端到端验证（弹窗接管 + 逐阶段确认）
-├── e2e-plan.mjs                 # 标准 plan-mode 端到端验证
-├── e2e-comments.mjs             # 行内评论功能端到端验证（增/改/删/持久化/提交反馈）
-└── demo-zh.mjs                  # 中文环境验证 + 截图
+│       ├── index.tsx         # 浏览器入口：tab 类型 + 三个槽注册 + 共享 store
+│       ├── claim.ts          # 载体收窄谓词（documentReviewOf）
+│       ├── review-address.ts # plan / plan-review 地址解析
+│       ├── blocks.ts         # mdast 块模型 + DOM 对齐自校验 + 引用/脚注检测
+│       ├── comments.ts       # 评论纯逻辑：CRUD / 聚合 / 内容哈希
+│       ├── review-store.ts   # 共享评论 store（引擎持久化）
+│       ├── review-tab.tsx    # tab 正文：分段渲染 + 评论卡 + 交互 + 只读回退
+│       ├── plan-badge.tsx    # 决策卡片徽标 + 提交入口
+│       ├── augment.d.ts      # plan 资源协议 / plan-review 参数的结构性类型合并
+│       ├── locales.ts        # zh / en 词典
+│       └── styles.ts         # 注入式 CSS（drr- 前缀，仅主题 token）
+├── tests/                    # 44 项：blocks / comments / claim / review-tab / plan-badge
+├── demo/                     # 验证截图（原生渲染 + 评论卡 + 徽标）
+├── smoke.mjs                 # 浏览器冒烟（插件 materialize + 零控制台错误）
+├── e2e-comments.mjs          # /plan 全链路：评论生命周期 + 持久化 + 反馈 + 批准 DONE
+├── e2e-plan.mjs              # /plan 接管 + 原生批准 DONE（只读路径）
+└── demo-zh.mjs               # 中文环境验证 + 截图
 ```
 
 ## 安装与部署
 
 ### 环境要求
 
-- DSH Web，Client API `0.1.5-alpha.1`（见「兼容性」）
-- pnpm `>= 11`
-- Node `>= 22`
+- DSH Web，客户端 `0.1.7-alpha.2`（原生 plan-review 流 + extension tab 协议）
+- pnpm `>= 10`，Node `>= 22`
 
 ### 构建
 
 ```sh
 cd dsh-doc-review
-
-# 首次安装依赖（从 registry 拉取 @deepseek-ai/* 客户端包；版本与目标 DSH 对齐）
 pnpm install
-
-pnpm run typecheck    # 类型检查
-pnpm run test         # 单元测试（86 项全绿）
-pnpm run build        # 构建（tsc 类型声明 + tsdown 打包）
-pnpm run pack         # 打包 tarball → dist/dsh-doc-review-0.1.1.tgz
+pnpm run typecheck
+pnpm run test          # 44 项单测
+pnpm run build         # tsc 类型声明 + tsdown 打包（client bundle ~74KB gz）
+pnpm run pack          # dist/dsh-doc-review-0.2.0.tgz
 ```
 
 ### 部署到 profile
@@ -232,108 +159,36 @@ pnpm run pack         # 打包 tarball → dist/dsh-doc-review-0.1.1.tgz
     }
   },
   "dependencies": {
-    // ... 已有依赖 ...
-    "dsh-doc-review": "file:/path/to/dsh-doc-review/dist/dsh-doc-review-0.1.1.tgz"  // ← 新增
+    "dsh-doc-review": "file:/path/to/dsh-doc-review/dist/dsh-doc-review-0.2.0.tgz"  // ← 新增
   }
 }
 ```
 
-然后：
-
 ```sh
-cd ~/.dsh/profiles/web
-pnpm install
-
-# 重启 DSH Web 服务
-pkill -f "node --import tsx/esm apps/cli/src/bin.ts web"
-cd /path/to/deepseek-harness
-node --import tsx/esm apps/cli/src/bin.ts web &
+cd ~/.dsh/profiles/web && pnpm install
+# 重启 DSH Web 服务即可生效
 ```
 
 ### 快速迭代
 
-开发期间可跳过打包步骤，直接同步构建产物：
-
 ```sh
 pnpm run build
-rsync -a lib/ cordis.patch.yml dsh.plugin.json \
+rsync -a lib cordis.patch.yml dsh.plugin.json package.json \
   ~/.dsh/profiles/web/node_modules/dsh-doc-review/
-
 # 重启 DSH Web 服务即可生效
 ```
 
 ### 验证
 
-重启后访问 `http://127.0.0.1:3080/`，在自适应模式下跑一个任务进入设计阶段，或在标准模式下输入 `/plan`——弹窗应自动弹出并渲染设计文档。
-
-项目内置了四个验证脚本：
+重启后访问 Web，标准模式下输入 `/plan`——右侧边栏自动打开审阅文档（原生渲染），hover 文档块出现「+」入口，右键块直接评论。
 
 ```sh
-# 浏览器冒烟（插件加载、样式注入、零错误）
-node smoke.mjs
-
-# 标准 plan-mode 端到端（弹窗接管 + 弹窗内批准 + DONE）
-node e2e-plan.mjs
-
-# 行内评论端到端：自适应流水线全链路（行号槽添加 / 右键添加 / 编辑 / 删除 /
-# 刷新后 localStorage 持久化恢复 / 提交评论聚合反馈并驱动流水线完成落盘）+ 
-# 标准 plan-mode 下评论阻断批准、清空后恢复（断言失败退出码非零）
-node e2e-comments.mjs
-
-# 中文环境验证（按钮全部中文、紧凑布局、截图）
-node demo-zh.mjs
+node smoke.mjs          # 插件 materialize、样式注入、零控制台错误
+node e2e-comments.mjs   # 两个 /plan 场景：评论生命周期 + 反馈 + 批准 DONE
+node e2e-plan.mjs       # 接管 + 只读渲染 + 原生批准 DONE
+node demo-zh.mjs        # 中文环境验证 + 截图（保留待审现场）
 ```
-
-## 已知限制
-
-- 弹窗内宽表格保持横向滚动——`md-table-wide` 的容器查询突围仅作用于聊天消息流，弹窗是通用表面。
-- 弹窗不锁焦点（与 DSH 内置 `Modal` 一致）。
-- 重连 / 重挂载后弹窗随组件重开，与「新的待审请求」语义一致。
-- 答案值始终是提问方原始标签（中 / 英文），按钮显示语言随界面切换。
-
-## 已知限制
-
-- 弹窗内宽表格保持横向滚动——`md-table-wide` 的容器查询突围仅作用于聊天消息流，弹窗是通用表面。
-- 弹窗不锁焦点（与 DSH 内置 `Modal` 一致）。
-- 重连 / 重挂载后弹窗随组件重开，与「新的待审请求」语义一致。
-- 答案值始终是提问方原始标签（中 / 英文），按钮显示语言随界面切换。
-
-### 行级渲染限制（文档行内评论）
-
-行网格渲染器（`lines.tsx`）替换了 `MarkdownText`，以换取确定性的源行号映射与评论锚点，渲染保真度存在已知降级：
-
-- **无 KaTeX 数学公式**：公式按字面文本显示。
-- **无代码语法高亮**：代码围栏整块聚合为 `<pre><code>`，保留原文逐行展示。
-- **复杂 / 嵌套表格**：GFM 表格按块聚合保留原文行，不渲染为 `<table>`（跨行列无法可靠对齐）；表格行不可单独评论行列。
-- **嵌套列表展平**：嵌套列表按源行逐行渲染，层级缩进不还原。
-- **行内子集**：仅支持粗体 / 斜体 / 行内代码 / 删除线 / http(s)·mailto 链接；图片、脚注、原生 HTML 按文本转义展示。
-- 评论锚定依赖源行号，与渲染样式无关；文档内容变化（新 revision）会带来新的 `wait.key`，评论自然隔离不串味。
 
 ## License
 
-
 [MIT](LICENSE)
-
-```
-MIT License
-
-Copyright (c) 2026 yaodongH
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```

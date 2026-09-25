@@ -1,21 +1,23 @@
 /**
- * Claim logic for the document-review takeover: which pending interaction this
- * plugin renders. A document review is ONE question whose detail is a
- * rendered markdown document (it carries an ATX heading) with at most three
- * single-select options and either no presentation intent or the plan-review
- * intent. Every other request stays on the built-in question composer, so the
- * plugin only changes the surface for document-shaped materials.
+ * Narrowing for the pending carriers this plugin's review tab can serve: a
+ * document review is ONE question whose detail is a renderable markdown
+ * document (it carries an ATX heading) with at most three single-select
+ * options and either no presentation intent or the plan-review intent. The
+ * pure predicate is shared by the tab body and the decision-card badge, which
+ * both receive the Session's effective pending interaction and re-read its
+ * domain discriminator at runtime — the assembled Client unions every domain's
+ * carrier, and this program compiles against the question member alone.
  */
-import type { ComposerChainProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
+
 import type { PendingQuestion } from '@deepseek-ai/dsh-client-ui-user-questions/client'
 
 /**
- * The pending-question facts this takeover renders and answers with: the
- * question domain's own carrier, narrowed to the five members the modal, the
- * comment store and the decision footer touch.
+ * The pending-question facts the review surfaces render and answer with: the
+ * question domain's own carrier, narrowed to the five members the comment
+ * store and the submit surface touch.
  */
 export type QuestionCarrier = Pick<
-  PendingQuestion, 'key' | 'kind' | 'questions' | 'answer' | 'cancel'
+  PendingQuestion, 'key' | 'kind' | 'sessionId' | 'questions' | 'answer' | 'cancel'
 >
 
 /** One question item of the carrier, as the wire carries it. */
@@ -33,25 +35,23 @@ export interface DocumentReviewOption {
   description?: string
 }
 
-/** The narrowed document-review facts the panel renders and answers with. */
+/** The narrowed document-review facts the review tab renders and answers with. */
 export interface DocumentReview {
   /** The reviewed question's id, echoed in the answer. */
   id: string
   /** The question text, kept as the surfaces' accessible name. */
   question: string
-  /** The stage-scoped group label (e.g. `概要设计 · 阶段提问`), when present. */
-  header: string | undefined
   /** The document markdown under review. */
   detail: string
-  /** The asker's option list (at most MAX_OPTIONS). */
-  options: readonly DocumentReviewOption[]
+  /** Logged plan invocation backing the review, when the request carries one. */
+  callId: string | undefined
   /** The plan-review intent's approve label, when the request carries one. */
   approveLabel: string | undefined
 }
 
-/** The chain-match result: the carrier plus the narrowed review. */
+/** The narrowed review together with its carrier. */
 export interface DocumentReviewWait {
-  /** The pending question this takeover answers and cancels. */
+  /** The pending question this tab answers. */
   interaction: QuestionCarrier
   /** The narrowed review. */
   review: DocumentReview
@@ -64,15 +64,14 @@ function isDocument(detail: unknown): detail is string {
 
 /**
  * Narrow a pending question carrier to a document review, or return null to
- * leave it to the built-in question composer.
+ * leave it to the built-in flows.
  *
- * The takeover claims a request only when it can render every answer that
- * request allows, so the batch must be a single question that carries a
- * document-shaped detail and at most three single-select options; anything
- * the modal's decision row cannot express stays on the generic flow.
+ * The narrowing accepts a request only when it can express every answer it
+ * allows: one single-select question with a document-shaped detail and at
+ * most three options. Anything wider stays on the generic question flow.
  *
  * @param interaction - the Session's effective pending interaction.
- * @returns The narrowed review, or null when the generic flow owns it.
+ * @returns The narrowed review, or null when this plugin does not apply.
  */
 export function documentReviewOf(interaction: QuestionCarrier): DocumentReviewWait | null {
   // The assembled Client unions every domain's carrier (approvals included);
@@ -93,23 +92,9 @@ export function documentReviewOf(interaction: QuestionCarrier): DocumentReviewWa
     review: {
       id: question.id,
       question: question.question,
-      header: question.header,
       detail: question.detail,
-      options,
+      callId: question.intent?.callId,
       approveLabel: question.intent?.approve,
     },
   }
-}
-
-/**
- * Composer-chain selector: claim the Session's effective pending interaction
- * when it is a document review. Runs at priority -1 (before the built-in
- * question composer's default 0), so document reviews get the modal surface
- * and every other pending interaction falls through unchanged.
- *
- * @param owner - the composer chain currency dispatched by ConversationRoot.
- * @returns The narrowed document review, or null to leave the chain to the next entry.
- */
-export function selectDocumentReview({ pendingInteraction }: ComposerChainProps): DocumentReviewWait | null {
-  return pendingInteraction === undefined ? null : documentReviewOf(pendingInteraction)
 }

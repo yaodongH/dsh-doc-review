@@ -24,6 +24,10 @@ const REPO = resolve(process.cwd(), '..', 'deepseek-harness')
 
 const SOURCE_ALIASES = [
   ['@deepseek-ai/dsh-client-ui-primitives', 'packages/client/ui-primitives/src/index.ts'],
+  // The store engine's installed lib requires zustand through the strict
+  // pnpm graph, which this plugin cannot see; the DSH source resolves its
+  // implementation libraries from the sibling checkout's own install.
+  ['@deepseek-ai/dsh-client-store', 'packages/client/store/src/index.ts'],
 ] as const
 
 const hasDshSource = existsSync(resolve(REPO, 'packages', 'client', 'ui-primitives', 'src'))
